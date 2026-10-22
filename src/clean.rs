@@ -97,11 +97,24 @@ pub fn delete(cat: &Category, scan: &ScanResult, now: SystemTime) -> DeleteRepor
         }
     }
     for dir in &scan.dirs {
-        if in_any_root(dir, &cat.roots) && std::fs::symlink_metadata(dir).is_ok_and(|md| !is_link(&md)) {
+        if safe_to_touch(dir, &cat.roots) && std::fs::symlink_metadata(dir).is_ok_and(|md| !is_link(&md)) {
             let _ = std::fs::remove_dir(dir);
         }
     }
     rep
+}
+
+/// Todos los ancestros de `path` desde `root` (inclusive) son carpetas reales, sin enlaces.
+fn no_link_ancestors(path: &Path, root: &Path) -> bool {
+    path.ancestors()
+        .skip(1)
+        .take_while(|a| a.starts_with(root))
+        .all(|a| std::fs::symlink_metadata(a).is_ok_and(|md| md.is_dir() && !is_link(&md)))
+}
+
+/// Dentro de una raíz (léxico) y sin enlaces en las carpetas intermedias.
+fn safe_to_touch(path: &Path, roots: &[PathBuf]) -> bool {
+    in_any_root(path, roots) && roots.iter().any(|r| path.starts_with(r) && no_link_ancestors(path, r))
 }
 
 /// `Ok(Some(bytes))` borrado, `Ok(None)` ya no existe, `Err` saltado.
@@ -114,9 +127,10 @@ fn try_delete(cat: &Category, path: &Path, now: SystemTime) -> Result<Option<u64
         Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
         Err(_) => return Err(()),
     };
-    if is_link(&md) || !md.is_file() || !age_ok(&md, cat.filter, now) {
+    if is_link(&md) || !md.is_file() || !age_ok(&md, cat.filter, now) || !safe_to_touch(path, &cat.roots) {
         return Err(());
     }
+    // ponytail: queda una ventana TOCTOU de microsegundos; el arreglo real son borrados por handle en Win32 con FILE_FLAG_OPEN_REPARSE_POINT.
     if md.permissions().readonly() {
         let mut perm = md.permissions();
         perm.set_readonly(false);
@@ -206,10 +220,62 @@ mod tests {
         let c = ready(&root, Filter::All);
         let r = scan(&c, future());
         assert!(r.files.is_empty() && r.dirs.is_empty());
-        delete(&c, &r, future());
+        let hand = ScanResult {
+            files: vec![(root.join("enlace_archivo"), 5), (root.join("enlace/importante.txt"), 5)],
+            dirs: vec![root.join("enlace")],
+            bytes: 10,
+        };
+        let rep = delete(&c, &hand, future());
+        assert_eq!(rep.deleted, 0);
         assert!(fuera.join("importante.txt").exists());
         assert!(fs::symlink_metadata(root.join("enlace")).is_ok());
         assert!(fs::symlink_metadata(root.join("enlace_archivo")).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn delete_does_not_follow_linked_intermediate_dir() {
+        let base = temp_dir("linked_mid");
+        let (root, fuera) = (base.join("root"), base.join("fuera"));
+        write(&fuera.join("importante.txt"), 5);
+        fs::create_dir_all(&root).unwrap();
+        std::os::unix::fs::symlink(&fuera, root.join("enlace")).unwrap();
+        let s = ScanResult { files: vec![(root.join("enlace/importante.txt"), 5)], dirs: vec![], bytes: 5 };
+        let rep = delete(&ready(&root, Filter::All), &s, future());
+        assert!(fuera.join("importante.txt").exists());
+        assert_eq!((rep.skipped, rep.skipped_bytes, rep.deleted), (1, 5, 0));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn delete_detects_dir_swapped_for_link_after_scan() {
+        let base = temp_dir("swapped");
+        let (root, fuera) = (base.join("root"), base.join("fuera"));
+        write(&root.join("sub/victima.txt"), 7);
+        write(&fuera.join("victima.txt"), 7);
+        let c = ready(&root, Filter::All);
+        let s = scan(&c, future());
+        fs::remove_dir_all(root.join("sub")).unwrap();
+        std::os::unix::fs::symlink(&fuera, root.join("sub")).unwrap();
+        let rep = delete(&c, &s, future());
+        assert!(fuera.join("victima.txt").exists());
+        assert_eq!((rep.skipped, rep.skipped_bytes, rep.deleted), (1, 7, 0));
+    }
+
+    #[test]
+    fn delete_rechecks_age() {
+        let root = temp_dir("recheck_age");
+        let f = root.join("a.tmp");
+        write(&f, 4);
+        let real = SystemTime::now();
+        let c = ready(&root, Filter::OlderThan(DAY));
+        let now = real + 2 * DAY;
+        let s = scan(&c, now);
+        assert_eq!(s.files.len(), 1);
+        File::options().write(true).open(&f).unwrap().set_modified(real + 5 * DAY).unwrap();
+        let rep = delete(&c, &s, now);
+        assert!(f.exists());
+        assert_eq!((rep.skipped, rep.skipped_bytes, rep.deleted), (1, 4, 0));
     }
 
     #[test]
