@@ -151,9 +151,11 @@ pub fn fixed_drives() -> Vec<Drive> {
         .collect()
 }
 
-#[allow(dead_code)] // La Task 8 lo usa y quita este allow.
+/// Abre el Explorador con `path` seleccionado. Se lanza por ruta absoluta: con solo
+/// `explorer.exe`, Windows buscaría antes en la carpeta del `.exe` portable.
 pub fn open_in_explorer(path: &Path) {
-    let _ = Command::new("explorer.exe")
+    let Some(windows) = known_folder(&FOLDERID_Windows) else { return };
+    let _ = Command::new(windows.join("explorer.exe"))
         .raw_arg(format!("/select,\"{}\"", path.display()))
         .spawn();
 }

@@ -1,13 +1,17 @@
 //! Ventana principal: unidades, pestaña Limpieza y pestaña Análisis.
 
 use std::cell::RefCell;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 use native_windows_gui as nwg;
-use nwg::{CheckBoxState, ProgressBarState};
+use nwg::{CheckBoxState, ProgressBarState, RadioButtonState};
 
+use wincleaner::analyze::{Analysis, analyze};
 use wincleaner::categories::{Category, CategoryId, Status, build_categories};
 use wincleaner::clean::{self, DeleteReport, ScanResult};
 use wincleaner::format;
@@ -21,6 +25,9 @@ enum Msg {
     /// Índice de la categoría, escaneo y nº de archivos (de elementos en la papelera).
     Scanned(usize, ScanResult, u64),
     Cleaned(Vec<(&'static str, DeleteReport)>),
+    /// Archivos analizados hasta ahora.
+    Progress(u64),
+    Analyzed(Analysis, Duration),
 }
 
 #[derive(Default)]
@@ -31,6 +38,9 @@ struct State {
     pending: usize,
     /// Hay un borrado en marcha: la ventana no se cierra ni cambia de pestaña.
     cleaning: bool,
+    analysis: Option<Analysis>,
+    /// Hay un análisis en marcha; se detiene poniéndolo a `true`.
+    cancel: Option<Arc<AtomicBool>>,
 }
 
 #[derive(Default)]
@@ -47,6 +57,14 @@ struct Ui {
     rows: Vec<(nwg::CheckBox, nwg::Label, nwg::Label)>,
     admin_btn: nwg::Button,
     clean_btn: nwg::Button,
+    drive_label: nwg::Label,
+    drive_combo: nwg::ComboBox<String>,
+    dirs_radio: nwg::RadioButton,
+    files_radio: nwg::RadioButton,
+    analyze_btn: nwg::Button,
+    list: nwg::ListView,
+    summary: nwg::Label,
+    open_btn: nwg::Button,
 }
 
 pub struct App {
@@ -144,6 +162,62 @@ fn build_ui(admin: bool, rows: usize) -> Result<Ui, nwg::NwgError> {
         .enabled(false)
         .build(&mut ui.clean_btn)?;
     ui.admin_btn.set_visible(!admin);
+
+    let tab = &ui.analysis_tab;
+    nwg::Label::builder().parent(tab).text("Unidad:").position((12, 14)).size((54, 20)).build(&mut ui.drive_label)?;
+    nwg::ComboBox::builder()
+        .parent(tab)
+        .position((70, 10))
+        .size((80, 25))
+        .collection(win::fixed_drives().into_iter().map(|d| d.root).collect())
+        .selected_index(Some(0))
+        .build(&mut ui.drive_combo)?;
+    nwg::RadioButton::builder()
+        .parent(tab)
+        .text("Carpetas")
+        .position((172, 12))
+        .size((90, 24))
+        .flags(nwg::RadioButtonFlags::VISIBLE | nwg::RadioButtonFlags::GROUP)
+        .check_state(RadioButtonState::Checked)
+        .build(&mut ui.dirs_radio)?;
+    nwg::RadioButton::builder()
+        .parent(tab)
+        .text("Archivos")
+        .position((266, 12))
+        .size((90, 24))
+        .build(&mut ui.files_radio)?;
+    nwg::Button::builder()
+        .parent(tab)
+        .text("Analizar")
+        .position((482, 8))
+        .size((120, 32))
+        .build(&mut ui.analyze_btn)?;
+    nwg::ListView::builder()
+        .parent(tab)
+        .position((12, 48))
+        .size((590, 332))
+        .list_style(nwg::ListViewStyle::Detailed)
+        .ex_flags(nwg::ListViewExFlags::FULL_ROW_SELECT)
+        .build(&mut ui.list)?;
+    // NWG crea la lista con LVS_NOCOLUMNHEADER forzado.
+    ui.list.set_headers_enabled(true);
+    for (text, width, fmt) in
+        [("#", 40, None), ("Ruta", 420, None), ("Tamaño", 100, Some(nwg::ListViewColumnFlags::RIGHT))]
+    {
+        ui.list.insert_column(nwg::InsertListViewColumn {
+            index: None,
+            fmt,
+            width: Some(width),
+            text: Some(text.into()),
+        });
+    }
+    nwg::Label::builder().parent(tab).position((12, 396)).size((440, 24)).build(&mut ui.summary)?;
+    nwg::Button::builder()
+        .parent(tab)
+        .text("Abrir ubicación")
+        .position((462, 392))
+        .size((140, 32))
+        .build(&mut ui.open_btn)?;
     Ok(ui)
 }
 
@@ -180,6 +254,10 @@ impl App {
             E::OnButtonClick if h == self.ui.admin_btn && win::relaunch_as_admin() => nwg::stop_thread_dispatch(),
             E::OnButtonClick if h == self.ui.clean_btn => self.confirm_and_clean(),
             E::OnButtonClick if self.ui.rows.iter().any(|r| h == r.0) => self.update_total(),
+            E::OnButtonClick if h == self.ui.analyze_btn => self.toggle_analysis(),
+            E::OnButtonClick if h == self.ui.dirs_radio || h == self.ui.files_radio => self.fill_list(),
+            E::OnButtonClick if h == self.ui.open_btn => self.open_selected(),
+            E::OnListViewDoubleClick if h == self.ui.list => self.open_selected(),
             _ => {}
         }
     }
@@ -227,6 +305,80 @@ impl App {
                 nwg::modal_info_message(&self.ui.window, "Limpieza terminada", &text);
                 self.start_scan(categories());
             }
+            Msg::Progress(n) => self.set_status(&format!("Analizando… {} archivos", format::count(n))),
+            Msg::Analyzed(a, took) => {
+                let mut summary =
+                    format!("Analizados {} archivos en {} s", format::count(a.files_scanned), took.as_secs());
+                if a.cancelled {
+                    summary += " (detenido)";
+                }
+                self.ui.summary.set_text(&summary);
+                self.ui.analyze_btn.set_text("Analizar");
+                let mut st = self.state.borrow_mut();
+                st.analysis = Some(a);
+                st.cancel = None;
+                drop(st);
+                self.fill_list();
+                self.set_status("Análisis terminado.");
+            }
+        }
+    }
+
+    /// La barra de estado, salvo durante un borrado, que tiene preferencia.
+    fn set_status(&self, text: &str) {
+        if !self.state.borrow().cleaning {
+            self.ui.status.set_text(0, text);
+        }
+    }
+
+    /// «Analizar» lanza el análisis de la unidad elegida; si ya hay uno, hace de «Detener».
+    fn toggle_analysis(&self) {
+        let mut st = self.state.borrow_mut();
+        if let Some(cancel) = &st.cancel {
+            cancel.store(true, Ordering::Relaxed);
+            return;
+        }
+        let combo = &self.ui.drive_combo;
+        let Some(root) = combo.selection().and_then(|i| combo.collection().get(i).cloned()) else { return };
+        let cancel = Arc::new(AtomicBool::new(false));
+        st.cancel = Some(Arc::clone(&cancel));
+        drop(st);
+        self.ui.analyze_btn.set_text("Detener");
+        self.set_status("Analizando… 0 archivos");
+        let (tx, notice) = (self.tx.clone(), self.ui.notice.sender());
+        std::thread::spawn(move || {
+            let start = Instant::now();
+            let a = analyze(Path::new(&root), &cancel, &mut |n| {
+                if tx.send(Msg::Progress(n)).is_ok() {
+                    notice.notice();
+                }
+            });
+            if tx.send(Msg::Analyzed(a, start.elapsed())).is_ok() {
+                notice.notice();
+            }
+        });
+    }
+
+    /// Filas del último análisis según la opción elegida.
+    fn shown<'a>(&self, a: &'a Analysis) -> &'a [(PathBuf, u64)] {
+        if self.ui.dirs_radio.check_state() == RadioButtonState::Checked { &a.top_dirs } else { &a.top_files }
+    }
+
+    fn fill_list(&self) {
+        self.ui.list.clear();
+        let st = self.state.borrow();
+        let Some(a) = &st.analysis else { return };
+        for (i, (path, size)) in self.shown(a).iter().enumerate() {
+            let row = [(i + 1).to_string(), path.display().to_string(), format::bytes(*size)];
+            self.ui.list.insert_items_row(None, &row);
+        }
+    }
+
+    fn open_selected(&self) {
+        let st = self.state.borrow();
+        let (Some(a), Some(i)) = (&st.analysis, self.ui.list.selected_item()) else { return };
+        if let Some((path, _)) = self.shown(a).get(i) {
+            win::open_in_explorer(path);
         }
     }
 
@@ -248,8 +400,16 @@ impl App {
         }
         let jobs: Vec<(usize, Category)> =
             cats.iter().cloned().enumerate().filter(|(_, c)| c.status == Status::Ready).collect();
-        *self.state.borrow_mut() =
-            State { scans: vec![None; cats.len()], recycle_items: 0, pending: jobs.len(), cleaning: false, cats };
+        // El análisis sigue: solo se reinicia la parte de la limpieza.
+        let old = self.state.take();
+        *self.state.borrow_mut() = State {
+            scans: vec![None; cats.len()],
+            pending: jobs.len(),
+            cats,
+            analysis: old.analysis,
+            cancel: old.cancel,
+            ..Default::default()
+        };
         self.ui.status.set_text(0, "Calculando tamaños…");
         self.ui.admin_btn.set_enabled(true);
         self.ui.tabs.set_enabled(true);
