@@ -41,20 +41,21 @@ Solo se borra el contenido de esas carpetas, nunca la carpeta raíz. Las cookies
 ## 🛡️ Seguridad
 
 - **Lista blanca.** Un archivo solo se borra si su ruta está estrictamente dentro de una de las carpetas de la tabla. No se aceptan `..`, rutas relativas, `\\?\`, rutas de red ni flujos alternativos.
-- **Carpetas protegidas.** Nunca se limpia una carpeta igual o antecesora de la raíz de una unidad, tu perfil, Documentos, Escritorio, Descargas, Imágenes, Música, Vídeos (con su ruta real, aunque estén en OneDrive), `Windows`, `System32` o `Program Files`. Si `%TEMP%` apunta a un sitio raro, esa categoría sale como «ruta no reconocida». Si Windows no puede indicar cuáles son las carpetas protegidas, la app se niega a limpiar nada salvo la papelera.
-- **Enlaces.** Los enlaces simbólicos y los junctions no se siguen ni se borran, tampoco las carpetas intermedias, que se vuelven a comprobar justo antes de cada borrado.
+- **Carpetas protegidas.** Nunca se limpia una carpeta igual o antecesora de la raíz de una unidad, tu perfil, `Windows`, `System32` o `Program Files`. Documentos, Escritorio, Descargas, Imágenes, Música y Vídeos (con su ruta real, aunque estén en OneDrive) quedan vetadas por completo: ni ellas, ni sus antecesoras, ni nada de lo que contienen. Si `%TEMP%` apunta a un sitio raro, esa categoría sale como «ruta no reconocida». Si Windows no puede indicar cuáles son las carpetas protegidas, la app se niega a limpiar nada salvo la papelera.
+- **Enlaces.** Los enlaces simbólicos y los junctions no se siguen ni se borran. Cada borrado se hace por handle: se abre el archivo sin seguir enlaces, se comprueba su ruta real dentro de la carpeta y se borra ese mismo objeto, así que cambiar a mitad una carpeta intermedia por un junction no sirve para borrar nada de fuera.
 - **Archivos en uso.** Los bloqueados o sin permiso se saltan sin errores y se cuentan en el informe.
 - **Confirmación.** Nada se borra sin pasar por una ventana que lista las categorías marcadas y el total. Es el cuadro de mensaje del sistema con «Cancelar» como botón por defecto, así que pulsar Intro no borra por accidente. Mientras se limpia, la ventana no se puede cerrar.
 - **Informe.** Al terminar, lo liberado por categoría y los archivos saltados.
 
 ## 🚀 Uso
 
-1. Descarga `wincleaner.exe` (o [compílalo](#-compilar)).
-2. Ejecútalo, sin instalar nada. Arranca sin permisos de administrador.
+1. [Compílalo](#-compilar): todavía no hay versiones publicadas para descargar.
+2. Ejecuta `wincleaner.exe`, sin instalar nada. Arranca sin permisos de administrador. Como el `.exe` no está firmado, SmartScreen puede avisar de que es una aplicación desconocida («Más información» → «Ejecutar de todas formas»).
 3. Las categorías que lo necesitan (Temporales de Windows y Windows Update) salen desactivadas. Pulsa «Reiniciar como administrador» para activarlas.
 
 Notas:
 
+- La papelera empieza desmarcada: es la única categoría con documentos que se pueden recuperar. Si la marcas, se vacía entera, también lo que se haya enviado a la papelera después de calcular los tamaños.
 - Si elevas con las credenciales de otra cuenta, se limpian el perfil y la papelera de esa cuenta, no los tuyos.
 - Explorer suele tener bloqueados los archivos de miniaturas, así que esa categoría puede liberar poco o nada. No es un fallo.
 - Con el navegador abierto, sus archivos en uso se saltan.
@@ -70,7 +71,7 @@ cargo build --release --target x86_64-pc-windows-gnu
 
 El resultado queda en `target/x86_64-pc-windows-gnu/release/wincleaner.exe`.
 
-En Windows basta con `cargo build --release`.
+En Windows necesitas Rust 1.87 o posterior (edición 2024) y el compilador de recursos que usa `embed-resource`: `rc.exe` del Windows SDK con la toolchain MSVC, o `windres` de mingw con la GNU. Después basta con `cargo build --release`.
 
 ## 🗺️ Hoja de ruta
 

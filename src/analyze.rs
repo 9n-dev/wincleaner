@@ -30,12 +30,13 @@ pub fn pick_top_dirs(mut dirs: Vec<(PathBuf, u64)>, n: usize) -> Vec<(PathBuf, u
             break;
         }
     }
-    selected.sort_by(|a, b| b.1.cmp(&a.1));
+    selected.sort_by_key(|s| Reverse(s.1));
     selected
 }
 
 pub fn analyze(root: &Path, cancel: &AtomicBool, progress: &mut dyn FnMut(u64)) -> Analysis {
     // (ruta, índice del padre, bytes de archivos directos); los hijos siempre van después del padre.
+    // ponytail: un PathBuf por carpeta (≈100+ MB en discos enormes); si pesa, guardar índice del padre + nombre.
     let mut dirs: Vec<(PathBuf, usize, u64)> = vec![(root.to_path_buf(), 0, 0)];
     let mut heap: BinaryHeap<Reverse<(u64, PathBuf)>> = BinaryHeap::new();
     let mut out = Analysis::default();
@@ -61,7 +62,7 @@ pub fn analyze(root: &Path, cancel: &AtomicBool, progress: &mut dyn FnMut(u64)) 
                         heap.pop();
                     }
                     out.files_scanned += 1;
-                    if out.files_scanned % 10_000 == 0 {
+                    if out.files_scanned.is_multiple_of(10_000) {
                         progress(out.files_scanned);
                     }
                 }
