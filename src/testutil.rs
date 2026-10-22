@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 
-#[allow(dead_code)] // lo usan las pruebas de las tareas siguientes
 /// Carpeta vacía y única para una prueba; borra la anterior si existía.
 pub fn temp_dir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("wincleaner-test-{tag}-{}", std::process::id()));
