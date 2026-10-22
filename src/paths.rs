@@ -6,6 +6,9 @@ fn parse(p: &str) -> Option<Vec<String>> {
         return None;
     }
     let unix = p.starts_with('/');
+    if unix && cfg!(windows) {
+        return None; // en Windows '/x' se resuelve contra la unidad actual
+    }
     let mut comps: Vec<String> = Vec::new();
     for (i, c) in p.split(['\\', '/']).filter(|c| !c.is_empty()).enumerate() {
         if c == "." || c == ".." {
@@ -105,6 +108,14 @@ mod tests {
     fn unix_absolute_paths_work_for_tests() {
         assert!(is_inside("/tmp/w/Temp/a", "/tmp/w/Temp"));
         assert!(!is_inside("/tmp/w/Temp", "/tmp/w/Temp"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn unix_paths_rejected_on_windows() {
+        let prot = vec![r"C:\Windows".to_string()];
+        assert!(!is_inside("/tmp/w/Temp/a", "/tmp/w/Temp"));
+        assert!(!root_is_safe("/Windows", &prot, &[]));
     }
 
     #[test]
