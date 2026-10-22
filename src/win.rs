@@ -13,7 +13,8 @@ use winapi::shared::minwindef::{BOOL, DWORD};
 use winapi::shared::ntdef::{PULARGE_INTEGER, PWSTR};
 use winapi::shared::windef::HWND;
 use winapi::shared::winerror::{E_UNEXPECTED, S_OK};
-use winapi::um::combaseapi::CoTaskMemFree;
+use winapi::um::combaseapi::{CoInitializeEx, CoTaskMemFree, CoUninitialize};
+use winapi::um::commctrl::BCM_SETSHIELD;
 use winapi::um::fileapi::{
     GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDriveStringsW, GetLongPathNameW,
 };
@@ -23,13 +24,16 @@ use winapi::um::knownfolders::{
     FOLDERID_ProgramFiles, FOLDERID_ProgramFilesX86, FOLDERID_System, FOLDERID_Videos,
     FOLDERID_Windows,
 };
+use winapi::um::objbase::COINIT_APARTMENTTHREADED;
 use winapi::um::shellapi::{
     SHEmptyRecycleBinW, SHQUERYRBINFO, SHQueryRecycleBinW, ShellExecuteW, SHERB_NOCONFIRMATION,
     SHERB_NOPROGRESSUI, SHERB_NOSOUND,
 };
 use winapi::um::shlobj::SHGetKnownFolderPath;
 use winapi::um::winbase::DRIVE_FIXED;
-use winapi::um::winuser::{IDOK, MB_DEFBUTTON2, MB_ICONWARNING, MB_OKCANCEL, MessageBoxW, SW_SHOWNORMAL};
+use winapi::um::winuser::{
+    IDOK, MB_DEFBUTTON2, MB_ICONWARNING, MB_OKCANCEL, MessageBoxW, SW_SHOWNORMAL, SendMessageW,
+};
 
 use wincleaner::categories::Env;
 
@@ -102,6 +106,24 @@ pub fn relaunch_as_admin() -> bool {
         ShellExecuteW(null_mut(), verb.as_ptr(), file.as_ptr(), null(), null(), SW_SHOWNORMAL)
     };
     h as isize > 32
+}
+
+/// Ejecuta `f` con COM iniciado en este hilo: las funciones de la papelera lo usan por dentro.
+pub fn with_com<T>(f: impl FnOnce() -> T) -> T {
+    // SAFETY: reservado nulo; si tiene éxito (S_OK o S_FALSE) se equilibra con CoUninitialize.
+    let hr = unsafe { CoInitializeEx(null_mut(), COINIT_APARTMENTTHREADED) };
+    let out = f();
+    if hr >= 0 {
+        // SAFETY: este hilo inició COM justo arriba.
+        unsafe { CoUninitialize() };
+    }
+    out
+}
+
+/// Pone en el botón el escudo de UAC del sistema.
+pub fn set_shield(button: HWND) {
+    // SAFETY: mensaje sin punteros (wParam 0, lParam TRUE) a un botón que existe.
+    unsafe { SendMessageW(button, BCM_SETSHIELD, 0, 1) };
 }
 
 /// `(bytes, elementos)` de la papelera de todas las unidades.
@@ -204,8 +226,9 @@ fn drive_roots() -> Vec<String> {
     if n == 0 {
         return Vec::new();
     }
-    let mut buf = vec![0u16; n as usize];
-    // SAFETY: `buf` tiene `n` u16; si basta, devuelve la longitud sin el último nulo.
+    // Uno de más: según la versión, `n` puede no contar el último nulo.
+    let mut buf = vec![0u16; n as usize + 1];
+    // SAFETY: `buf` tiene `n + 1` u16; si basta, devuelve la longitud sin el último nulo.
     let m = unsafe { GetLogicalDriveStringsW(n, buf.as_mut_ptr()) };
     if m == 0 || m >= n {
         return Vec::new();

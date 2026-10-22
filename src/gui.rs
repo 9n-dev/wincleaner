@@ -43,6 +43,16 @@ struct State {
     cancel: Option<Arc<AtomicBool>>,
 }
 
+impl State {
+    /// Archivos escaneados de la categoría `i` (elementos, en la papelera).
+    fn items(&self, i: usize) -> u64 {
+        if self.cats[i].id == CategoryId::RecycleBin {
+            return self.recycle_items;
+        }
+        self.scans[i].as_ref().map_or(0, |s| s.files.len() as u64)
+    }
+}
+
 #[derive(Default)]
 struct Ui {
     window: nwg::Window,
@@ -108,7 +118,7 @@ fn categories() -> Vec<Category> {
 fn build_ui(admin: bool, rows: usize) -> Result<Ui, nwg::NwgError> {
     let mut ui = Ui::default();
     nwg::Window::builder()
-        .flags(nwg::WindowFlags::WINDOW | nwg::WindowFlags::VISIBLE)
+        .flags(nwg::WindowFlags::WINDOW | nwg::WindowFlags::MINIMIZE_BOX | nwg::WindowFlags::VISIBLE)
         .size((640, 600))
         .center(true)
         .title(if admin { "WinCleaner (administrador)" } else { "WinCleaner" })
@@ -150,10 +160,13 @@ fn build_ui(admin: bool, rows: usize) -> Result<Ui, nwg::NwgError> {
     let y = 24 + 30 * rows as i32;
     nwg::Button::builder()
         .parent(&ui.clean_tab)
-        .text("🛡 Reiniciar como administrador")
+        .text("Reiniciar como administrador")
         .position((12, y))
         .size((260, 32))
         .build(&mut ui.admin_btn)?;
+    if let Some(h) = ui.admin_btn.handle.hwnd() {
+        win::set_shield(h);
+    }
     nwg::Button::builder()
         .parent(&ui.clean_tab)
         .text("Revisar y limpiar (0 B)…")
@@ -270,7 +283,7 @@ impl App {
                 let recycle = st.cats[i].id == CategoryId::RecycleBin;
                 size.set_text(&format::bytes(scan.bytes));
                 files.set_text(&format!("{} {}", format::count(n), if recycle { "elementos" } else { "archivos" }));
-                if scan.bytes == 0 {
+                if n == 0 && scan.bytes == 0 {
                     check.set_check_state(CheckBoxState::Unchecked);
                 }
                 if recycle {
@@ -389,7 +402,9 @@ impl App {
             let ready = cat.status == Status::Ready;
             check.set_text(cat.name);
             check.set_enabled(ready);
-            check.set_check_state(if ready { CheckBoxState::Checked } else { CheckBoxState::Unchecked });
+            // La papelera es la única con documentos recuperables: se marca a mano.
+            let on = ready && cat.id != CategoryId::RecycleBin;
+            check.set_check_state(if on { CheckBoxState::Checked } else { CheckBoxState::Unchecked });
             size.set_text(if ready { "Calculando…" } else { "—" });
             files.set_text(match cat.status {
                 Status::Ready => "",
@@ -417,20 +432,22 @@ impl App {
 
         let (tx, notice) = (self.tx.clone(), self.ui.notice.sender());
         std::thread::spawn(move || {
-            for (i, cat) in jobs {
-                let (scan, n) = if cat.id == CategoryId::RecycleBin {
-                    let (bytes, items) = win::recycle_bin_size();
-                    (ScanResult { files: vec![], dirs: vec![], bytes }, items)
-                } else {
-                    let scan = clean::scan(&cat, SystemTime::now());
-                    let n = scan.files.len() as u64;
-                    (scan, n)
-                };
-                if tx.send(Msg::Scanned(i, scan, n)).is_err() {
-                    return;
+            win::with_com(|| {
+                for (i, cat) in jobs {
+                    let (scan, n) = if cat.id == CategoryId::RecycleBin {
+                        let (bytes, items) = win::recycle_bin_size();
+                        (ScanResult { files: vec![], dirs: vec![], bytes }, items)
+                    } else {
+                        let scan = clean::scan(&cat, SystemTime::now());
+                        let n = scan.files.len() as u64;
+                        (scan, n)
+                    };
+                    if tx.send(Msg::Scanned(i, scan, n)).is_err() {
+                        return;
+                    }
+                    notice.notice();
                 }
-                notice.notice();
-            }
+            })
         });
     }
 
@@ -460,9 +477,13 @@ impl App {
 
     fn update_total(&self) {
         let st = self.state.borrow();
-        let total: u64 = self.checked(&st).iter().filter_map(|&i| st.scans[i].as_ref()).map(|s| s.bytes).sum();
+        let sel = self.checked(&st);
+        let bytes = |i: usize| st.scans[i].as_ref().map_or(0, |s| s.bytes);
+        let total: u64 = sel.iter().map(|&i| bytes(i)).sum();
+        // Una categoría con archivos de 0 B también se puede limpiar.
+        let any = sel.iter().any(|&i| st.items(i) > 0 || bytes(i) > 0);
         self.ui.clean_btn.set_text(&format!("Revisar y limpiar ({})…", format::bytes(total)));
-        self.ui.clean_btn.set_enabled(st.pending == 0 && total > 0);
+        self.ui.clean_btn.set_enabled(st.pending == 0 && any);
     }
 
     fn confirm_and_clean(&self) {
@@ -472,18 +493,18 @@ impl App {
             if st.pending != 0 || st.cleaning || sel.is_empty() {
                 return;
             }
-            let (mut lines, mut total, mut files) = (Vec::new(), 0, 0);
+            let (mut lines, mut total, mut items) = (Vec::new(), 0, 0);
             for &i in &sel {
                 let Some(scan) = &st.scans[i] else { continue };
                 lines.push(format!("{} — {}", st.cats[i].name, format::bytes(scan.bytes)));
                 total += scan.bytes;
-                files += if st.cats[i].id == CategoryId::RecycleBin { st.recycle_items } else { scan.files.len() as u64 };
+                items += st.items(i);
             }
             let text = format!(
-                "Se van a borrar:\n\n{}\n\nTotal: {} ({} archivos)\n\nLos archivos en uso se saltarán. Esto no se puede deshacer.",
+                "Se van a borrar:\n\n{}\n\nTotal: {} ({} elementos)\n\nLos archivos en uso se saltarán. Esto no se puede deshacer.",
                 lines.join("\n"),
                 format::bytes(total),
-                format::count(files)
+                format::count(items)
             );
             (sel, text)
         };
@@ -506,7 +527,7 @@ impl App {
         self.ui.status.set_text(0, "Limpiando…");
         let (tx, notice) = (self.tx.clone(), self.ui.notice.sender());
         std::thread::spawn(move || {
-            let reports = jobs.iter().map(|(cat, scan)| (cat.name, clean_one(cat, scan))).collect();
+            let reports = win::with_com(|| jobs.iter().map(|(cat, scan)| (cat.name, clean_one(cat, scan))).collect());
             if tx.send(Msg::Cleaned(reports)).is_ok() {
                 notice.notice();
             }
