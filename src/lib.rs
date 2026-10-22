@@ -1,3 +1,4 @@
+pub mod analyze;
 pub mod categories;
 pub mod clean;
 pub mod format;
