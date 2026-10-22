@@ -36,6 +36,12 @@ pub fn is_inside(path: &str, root: &str) -> bool {
     }
 }
 
+/// Ruta de `GetFinalPathNameByHandleW` (`\\?\C:\…`) sin el prefijo; `None` si es de red
+/// (`\\?\UNC\…`) o no lleva el prefijo. Lo que quede raro lo rechaza después `is_inside`.
+pub fn strip_verbatim(p: &str) -> Option<&str> {
+    p.strip_prefix(r"\\?\").filter(|r| !r.get(..4).is_some_and(|u| u.eq_ignore_ascii_case(r"UNC\")))
+}
+
 pub fn root_is_safe(root: &str, protected: &[String], forbidden_trees: &[String]) -> bool {
     let Some(r) = parse(root) else { return false };
     let all = |list: &[String]| list.iter().filter_map(|s| parse(s)).collect::<Vec<_>>();
@@ -102,6 +108,15 @@ mod tests {
         assert!(!is_inside(r"D:\Users\M\AppData\Local\Temp\a", T));
         assert!(!is_inside("", T));
         assert!(!is_inside(r"C:\a", ""));
+    }
+
+    #[test]
+    fn strip_verbatim_only_accepts_local_drive_paths() {
+        assert_eq!(strip_verbatim(r"\\?\C:\Windows\Temp\a"), Some(r"C:\Windows\Temp\a"));
+        assert_eq!(strip_verbatim(r"\\?\UNC\server\share\a"), None);
+        assert_eq!(strip_verbatim(r"\\?\unc\server\share\a"), None);
+        assert_eq!(strip_verbatim(r"C:\Windows\Temp\a"), None);
+        assert_eq!(strip_verbatim(r"\\.\C:\a"), None);
     }
 
     #[test]

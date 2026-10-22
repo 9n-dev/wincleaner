@@ -3,6 +3,7 @@
 use crate::categories::{is_link, Category, Filter, Status};
 use crate::paths::is_inside;
 use std::fs::Metadata;
+#[cfg(not(windows))]
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -81,8 +82,13 @@ pub fn scan(cat: &Category, now: SystemTime) -> ScanResult {
 }
 
 pub fn delete(cat: &Category, scan: &ScanResult, now: SystemTime) -> DeleteReport {
+    #[cfg(windows)]
+    let finals = handle::final_roots(&cat.roots);
     let mut rep = DeleteReport::default();
     for (path, size) in &scan.files {
+        #[cfg(windows)]
+        let freed = handle::try_delete(cat, path, now, &finals);
+        #[cfg(not(windows))]
         let freed = try_delete(cat, path, now);
         match freed {
             Ok(Some(n)) => {
@@ -97,6 +103,9 @@ pub fn delete(cat: &Category, scan: &ScanResult, now: SystemTime) -> DeleteRepor
         }
     }
     for dir in &scan.dirs {
+        #[cfg(windows)]
+        handle::remove_dir(dir, &cat.roots, &finals);
+        #[cfg(not(windows))]
         if safe_to_touch(dir, &cat.roots) && std::fs::symlink_metadata(dir).is_ok_and(|md| !is_link(&md)) {
             let _ = std::fs::remove_dir(dir);
         }
@@ -105,6 +114,7 @@ pub fn delete(cat: &Category, scan: &ScanResult, now: SystemTime) -> DeleteRepor
 }
 
 /// Todos los ancestros de `path` desde `root` (inclusive) son carpetas reales, sin enlaces.
+#[cfg(not(windows))]
 fn no_link_ancestors(path: &Path, root: &Path) -> bool {
     path.ancestors()
         .skip(1)
@@ -113,11 +123,13 @@ fn no_link_ancestors(path: &Path, root: &Path) -> bool {
 }
 
 /// Dentro de una raíz (léxico) y sin enlaces en las carpetas intermedias.
+#[cfg(not(windows))]
 fn safe_to_touch(path: &Path, roots: &[PathBuf]) -> bool {
     in_any_root(path, roots) && roots.iter().any(|r| path.starts_with(r) && no_link_ancestors(path, r))
 }
 
 /// `Ok(Some(bytes))` borrado, `Ok(None)` ya no existe, `Err` saltado.
+#[cfg(not(windows))]
 fn try_delete(cat: &Category, path: &Path, now: SystemTime) -> Result<Option<u64>, ()> {
     if !in_any_root(path, &cat.roots) {
         return Err(());
@@ -130,13 +142,144 @@ fn try_delete(cat: &Category, path: &Path, now: SystemTime) -> Result<Option<u64
     if is_link(&md) || !md.is_file() || !age_ok(&md, cat.filter, now) || !safe_to_touch(path, &cat.roots) {
         return Err(());
     }
-    // ponytail: queda una ventana TOCTOU de microsegundos; el arreglo real son borrados por handle en Win32 con FILE_FLAG_OPEN_REPARSE_POINT.
+    // ponytail: este camino por ruta solo existe para las pruebas en Linux y deja una ventana
+    // TOCTOU entre comprobar y borrar; en Windows se borra por handle (mod `handle`).
     if md.permissions().readonly() {
         let mut perm = md.permissions();
         perm.set_readonly(false);
         let _ = std::fs::set_permissions(path, perm);
     }
     std::fs::remove_file(path).map(|_| Some(md.len())).map_err(|_| ())
+}
+
+/// Borrado por handle: se abre el objeto sin seguir enlaces en el último componente, se
+/// comprueba por ese handle (tipo, antigüedad y ruta final dentro de la raíz) y se borra
+/// por ese mismo handle. No hay ninguna resolución de ruta entre la comprobación y el
+/// borrado, así que cambiar una carpeta intermedia por un junction no sirve de nada.
+/// Cualquier fallo es «saltado»; nunca se recurre al borrado por ruta.
+#[cfg(windows)]
+mod handle {
+    use super::{age_ok, in_any_root};
+    use crate::categories::{is_link, Category};
+    use crate::paths::{is_inside, strip_verbatim};
+    use std::fs::{File, OpenOptions};
+    use std::io::ErrorKind;
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use std::path::{Path, PathBuf};
+    use std::time::SystemTime;
+    use winapi::shared::minwindef::DWORD;
+    use winapi::shared::winerror::{ERROR_INVALID_PARAMETER, ERROR_NOT_SUPPORTED};
+    use winapi::um::fileapi::{FILE_DISPOSITION_INFO, GetFinalPathNameByHandleW, SetFileInformationByHandle};
+    use winapi::um::minwinbase::{FileDispositionInfo, FileDispositionInfoEx};
+    use winapi::um::winbase::{FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, VOLUME_NAME_DOS};
+    use winapi::um::winnt::{DELETE, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, HANDLE};
+
+    // winapi 0.3.9 no declara FILE_NAME_NORMALIZED ni FILE_DISPOSITION_INFO_EX con sus flags.
+    // FILE_DISPOSITION_INFO_EX es un único ULONG `Flags`, así que se pasa un u32.
+    const FILE_NAME_NORMALIZED: DWORD = 0x0;
+    const FILE_DISPOSITION_FLAG_DELETE: u32 = 0x1;
+    const FILE_DISPOSITION_FLAG_POSIX_SEMANTICS: u32 = 0x2;
+    const FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE: u32 = 0x10;
+    // Valores de FILE_INFO_BY_HANDLE_CLASS según la documentación de Microsoft.
+    const _: () = assert!(FileDispositionInfo == 4 && FileDispositionInfoEx == 21);
+
+    /// Abre `path` sin seguir un enlace en el último componente (los intermedios sí se
+    /// siguen: por eso luego se mira la ruta final). También abre carpetas.
+    fn open(path: &Path, access: DWORD) -> std::io::Result<File> {
+        OpenOptions::new()
+            .access_mode(access)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+            .open(path)
+    }
+
+    /// Ruta real del objeto abierto (`C:\…`); `None` si es de red o no se puede leer.
+    fn final_path(f: &File) -> Option<String> {
+        let h = f.as_raw_handle() as HANDLE;
+        let mut buf = vec![0u16; 260];
+        for _ in 0..2 {
+            // SAFETY: `h` vive mientras `f`; `buf` tiene `buf.len()` u16. Si no cabe,
+            // devuelve el tamaño necesario con el nulo; si cabe, la longitud sin él.
+            let n = unsafe {
+                GetFinalPathNameByHandleW(h, buf.as_mut_ptr(), buf.len() as DWORD, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS)
+            } as usize;
+            if n == 0 {
+                return None;
+            }
+            if n < buf.len() {
+                let s = String::from_utf16(&buf[..n]).ok()?;
+                return strip_verbatim(&s).map(str::to_owned);
+            }
+            buf.resize(n, 0);
+        }
+        None
+    }
+
+    fn inside(f: &File, finals: &[String]) -> bool {
+        final_path(f).is_some_and(|p| finals.iter().any(|r| is_inside(&p, r)))
+    }
+
+    /// Ruta final de cada raíz que sea una carpeta real (no un enlace). Se abre solo con
+    /// FILE_READ_ATTRIBUTES, que no choca con los modos de compartir de otros procesos.
+    pub fn final_roots(roots: &[PathBuf]) -> Vec<String> {
+        let real_dir = |f: &File| f.metadata().is_ok_and(|md| md.is_dir() && !is_link(&md));
+        roots
+            .iter()
+            .filter_map(|r| open(r, FILE_READ_ATTRIBUTES).ok().filter(real_dir))
+            .filter_map(|f| final_path(&f))
+            .collect()
+    }
+
+    /// Marca el objeto del handle para borrarse al cerrarlo (al soltar `f`).
+    fn mark_deleted(f: &File) -> bool {
+        let h = f.as_raw_handle() as HANDLE;
+        let mut flags = FILE_DISPOSITION_FLAG_DELETE
+            | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS
+            | FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE;
+        // SAFETY: `h` vive mientras `f`; el búfer es el u32 de FILE_DISPOSITION_INFO_EX.
+        let ok = unsafe { SetFileInformationByHandle(h, FileDispositionInfoEx, (&raw mut flags).cast(), size_of_val(&flags) as DWORD) };
+        if ok != 0 {
+            return true;
+        }
+        // Sin FileDispositionInfoEx (Windows 10 anterior a 1709, FAT…) se usa la clásica.
+        let e = std::io::Error::last_os_error().raw_os_error();
+        if !matches!(e, Some(c) if c as u32 == ERROR_INVALID_PARAMETER || c as u32 == ERROR_NOT_SUPPORTED) {
+            return false;
+        }
+        let mut info = FILE_DISPOSITION_INFO { DeleteFile: 1 };
+        let size = size_of::<FILE_DISPOSITION_INFO>() as DWORD;
+        // SAFETY: `h` vive mientras `f`; `info` es un FILE_DISPOSITION_INFO de `size` bytes.
+        unsafe { SetFileInformationByHandle(h, FileDispositionInfo, (&raw mut info).cast(), size) != 0 }
+    }
+
+    /// `Ok(Some(bytes))` borrado, `Ok(None)` ya no existe, `Err` saltado.
+    pub fn try_delete(cat: &Category, path: &Path, now: SystemTime, finals: &[String]) -> Result<Option<u64>, ()> {
+        if !in_any_root(path, &cat.roots) {
+            return Err(());
+        }
+        let f = match open(path, DELETE | FILE_READ_ATTRIBUTES) {
+            Ok(f) => f,
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(_) => return Err(()),
+        };
+        let md = f.metadata().map_err(|_| ())?;
+        if is_link(&md) || !md.is_file() || !age_ok(&md, cat.filter, now) || !inside(&f, finals) {
+            return Err(());
+        }
+        if mark_deleted(&f) { Ok(Some(md.len())) } else { Err(()) }
+    }
+
+    /// Borra `dir` si está vacía; si no, falla y se ignora.
+    pub fn remove_dir(dir: &Path, roots: &[PathBuf], finals: &[String]) {
+        if !in_any_root(dir, roots) {
+            return;
+        }
+        let Ok(f) = open(dir, DELETE | FILE_READ_ATTRIBUTES) else { return };
+        if f.metadata().is_ok_and(|md| md.is_dir() && !is_link(&md)) && inside(&f, finals) {
+            mark_deleted(&f);
+        }
+    }
 }
 
 #[cfg(test)]

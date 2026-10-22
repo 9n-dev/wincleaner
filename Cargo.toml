@@ -5,7 +5,7 @@ edition = "2024"
 
 [target.'cfg(windows)'.dependencies]
 native-windows-gui = { version = "1.0", default-features = false, features = ["tabs", "list-view", "progress-bar", "notice", "combobox", "status-bar", "high-dpi"] }
-winapi = { version = "0.3", features = ["shellapi", "shlobj", "knownfolders", "combaseapi", "fileapi", "winbase", "winuser", "shtypes", "winerror"] }
+winapi = { version = "0.3", features = ["shellapi", "shlobj", "knownfolders", "combaseapi", "objbase", "fileapi", "minwinbase", "winbase", "winnt", "winuser", "commctrl", "shtypes", "winerror"] }
 
 [build-dependencies]
 embed-resource = "3.0"
