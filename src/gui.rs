@@ -6,7 +6,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::SystemTime;
 
 use native_windows_gui as nwg;
-use nwg::{CheckBoxState, MessageButtons, MessageChoice, MessageIcons, MessageParams, ProgressBarState};
+use nwg::{CheckBoxState, ProgressBarState};
 
 use wincleaner::categories::{Category, CategoryId, Status, build_categories};
 use wincleaner::clean::{self, DeleteReport, ScanResult};
@@ -29,6 +29,8 @@ struct State {
     scans: Vec<Option<ScanResult>>,
     recycle_items: u64,
     pending: usize,
+    /// Hay un borrado en marcha: la ventana no se cierra ni cambia de pestaña.
+    cleaning: bool,
 }
 
 #[derive(Default)]
@@ -65,7 +67,7 @@ pub fn run() {
     let (tx, rx) = channel();
     let app = Rc::new(App { ui, tx, rx, state: Default::default() });
     let a = Rc::clone(&app);
-    let handler = nwg::full_bind_event_handler(&app.ui.window.handle, move |evt, _, h| a.on_event(evt, h));
+    let handler = nwg::full_bind_event_handler(&app.ui.window.handle, move |evt, data, h| a.on_event(evt, &data, h));
     app.start_scan(cats);
     nwg::dispatch_thread_events();
     nwg::unbind_event_handler(&handler);
@@ -163,10 +165,13 @@ fn clean_one(cat: &Category, scan: &ScanResult) -> DeleteReport {
 }
 
 impl App {
-    fn on_event(&self, evt: nwg::Event, h: nwg::ControlHandle) {
+    fn on_event(&self, evt: nwg::Event, data: &nwg::EventData, h: nwg::ControlHandle) {
         use nwg::Event as E;
         match evt {
-            E::OnWindowClose if h == self.ui.window => nwg::stop_thread_dispatch(),
+            E::OnWindowClose if h == self.ui.window => match data {
+                nwg::EventData::OnWindowClose(d) if self.state.borrow().cleaning => d.close(false),
+                _ => nwg::stop_thread_dispatch(),
+            },
             E::OnNotice if h == self.ui.notice => {
                 while let Ok(msg) = self.rx.try_recv() {
                     self.on_msg(msg);
@@ -202,6 +207,7 @@ impl App {
                 self.update_total();
             }
             Msg::Cleaned(reports) => {
+                self.state.borrow_mut().cleaning = false;
                 let sum = |f: fn(&DeleteReport) -> u64| reports.iter().map(|(_, r)| f(r)).sum::<u64>();
                 let (skipped, skipped_bytes) = (sum(|r| r.skipped), sum(|r| r.skipped_bytes));
                 let mut text = format!("Liberados {}\n", format::bytes(sum(|r| r.freed)));
@@ -243,9 +249,10 @@ impl App {
         let jobs: Vec<(usize, Category)> =
             cats.iter().cloned().enumerate().filter(|(_, c)| c.status == Status::Ready).collect();
         *self.state.borrow_mut() =
-            State { scans: vec![None; cats.len()], recycle_items: 0, pending: jobs.len(), cats };
+            State { scans: vec![None; cats.len()], recycle_items: 0, pending: jobs.len(), cleaning: false, cats };
         self.ui.status.set_text(0, "Calculando tamaños…");
         self.ui.admin_btn.set_enabled(true);
+        self.ui.tabs.set_enabled(true);
         self.update_total();
 
         let (tx, notice) = (self.tx.clone(), self.ui.notice.sender());
@@ -302,6 +309,9 @@ impl App {
         let (sel, text) = {
             let st = self.state.borrow();
             let sel = self.checked(&st);
+            if st.pending != 0 || st.cleaning || sel.is_empty() {
+                return;
+            }
             let (mut lines, mut total, mut files) = (Vec::new(), 0, 0);
             for &i in &sel {
                 let Some(scan) = &st.scans[i] else { continue };
@@ -317,18 +327,14 @@ impl App {
             );
             (sel, text)
         };
-        let params = MessageParams {
-            title: "Confirmar limpieza",
-            content: &text,
-            buttons: MessageButtons::OkCancel,
-            icons: MessageIcons::Warning,
-        };
-        if nwg::modal_message(&self.ui.window, &params) != MessageChoice::Ok {
+        let hwnd = self.ui.window.handle.hwnd().unwrap_or(std::ptr::null_mut());
+        if !win::confirm_warning(hwnd, "Confirmar limpieza", &text) {
             return;
         }
 
         let jobs: Vec<(Category, ScanResult)> = {
             let mut st = self.state.borrow_mut();
+            st.cleaning = true;
             sel.iter().filter_map(|&i| Some((st.cats[i].clone(), st.scans[i].take()?))).collect()
         };
         for (check, ..) in &self.ui.rows {
@@ -336,6 +342,7 @@ impl App {
         }
         self.ui.admin_btn.set_enabled(false);
         self.ui.clean_btn.set_enabled(false);
+        self.ui.tabs.set_enabled(false);
         self.ui.status.set_text(0, "Limpiando…");
         let (tx, notice) = (self.tx.clone(), self.ui.notice.sender());
         std::thread::spawn(move || {

@@ -11,6 +11,7 @@ use std::ptr::{null, null_mut};
 use winapi::shared::guiddef::GUID;
 use winapi::shared::minwindef::{BOOL, DWORD};
 use winapi::shared::ntdef::{PULARGE_INTEGER, PWSTR};
+use winapi::shared::windef::HWND;
 use winapi::shared::winerror::{E_UNEXPECTED, S_OK};
 use winapi::um::combaseapi::CoTaskMemFree;
 use winapi::um::fileapi::{
@@ -28,7 +29,7 @@ use winapi::um::shellapi::{
 };
 use winapi::um::shlobj::SHGetKnownFolderPath;
 use winapi::um::winbase::DRIVE_FIXED;
-use winapi::um::winuser::SW_SHOWNORMAL;
+use winapi::um::winuser::{IDOK, MB_DEFBUTTON2, MB_ICONWARNING, MB_OKCANCEL, MessageBoxW, SW_SHOWNORMAL};
 
 use wincleaner::categories::Env;
 
@@ -75,6 +76,15 @@ pub fn gather_env() -> Env {
         ]),
         is_admin: is_admin(),
     }
+}
+
+/// Aviso con Aceptar/Cancelar y Cancelar por defecto, para que una doble pulsación
+/// de Intro o Espacio no confirme nada. `true` solo con Aceptar.
+pub fn confirm_warning(parent: HWND, title: &str, text: &str) -> bool {
+    let (title, text) = (wide(title), wide(text));
+    let flags = MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON2;
+    // SAFETY: cadenas UTF-16 terminadas en nulo que viven durante la llamada; `parent` puede ser nulo.
+    unsafe { MessageBoxW(parent, text.as_ptr(), title.as_ptr(), flags) == IDOK }
 }
 
 pub fn is_admin() -> bool {
