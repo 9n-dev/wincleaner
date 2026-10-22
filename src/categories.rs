@@ -71,6 +71,9 @@ fn is_real_dir(p: &Path) -> bool {
 
 /// Subcarpetas directas de `dir` (vacío si no se puede leer).
 fn subdirs(dir: &Path) -> Vec<PathBuf> {
+    if !is_real_dir(dir) {
+        return Vec::new();
+    }
     let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
     rd.flatten().map(|e| e.path()).filter(|p| is_real_dir(p)).collect()
 }
@@ -280,6 +283,26 @@ mod tests {
         let mut want = vec![ud.join("Default/Cache"), ud.join("Default/Code Cache"), ud.join("Profile 1/GPUCache")];
         want.sort();
         assert_eq!(got, want);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_user_data_or_profile_is_ignored() {
+        use std::os::unix::fs::symlink;
+        let (u, env) = fake("cat-link");
+        let real = u.join("real");
+        create_dir_all(real.join("Default/Cache")).unwrap();
+        let chrome = u.join("AppData/Local/Google/Chrome");
+        create_dir_all(&chrome).unwrap();
+        symlink(&real, chrome.join("User Data")).unwrap();
+        let cats = build_categories(&env);
+        assert_eq!(get(&cats, CategoryId::Chrome).status, Status::NotFound);
+
+        let edge = u.join("AppData/Local/Microsoft/Edge/User Data");
+        create_dir_all(&edge).unwrap();
+        symlink(real.join("Default"), edge.join("Default")).unwrap();
+        let cats = build_categories(&env);
+        assert_eq!(get(&cats, CategoryId::Edge).status, Status::NotFound);
     }
 
     #[test]
