@@ -1,6 +1,8 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 #[cfg(windows)]
+mod gui;
+#[cfg(windows)]
 mod win;
 
 #[cfg(not(windows))]
@@ -10,5 +12,5 @@ fn main() {
 
 #[cfg(windows)]
 fn main() {
-    let _ = win::gather_env();
+    gui::run();
 }

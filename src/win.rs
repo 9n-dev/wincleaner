@@ -38,7 +38,6 @@ unsafe extern "system" {
     fn IsUserAnAdmin() -> BOOL;
 }
 
-#[allow(dead_code)] // La Task 7 lo usa y quita este allow.
 pub struct Drive {
     pub root: String,
     pub free: u64,
@@ -83,7 +82,6 @@ pub fn is_admin() -> bool {
     unsafe { IsUserAnAdmin() != 0 }
 }
 
-#[allow(dead_code)] // La Task 7 lo usa y quita este allow.
 pub fn relaunch_as_admin() -> bool {
     let Ok(exe) = std::env::current_exe() else {
         return false;
@@ -97,7 +95,6 @@ pub fn relaunch_as_admin() -> bool {
 }
 
 /// `(bytes, elementos)` de la papelera de todas las unidades.
-#[allow(dead_code)] // La Task 7 lo usa y quita este allow.
 pub fn recycle_bin_size() -> (u64, u64) {
     let mut info = SHQUERYRBINFO {
         cbSize: size_of::<SHQUERYRBINFO>() as DWORD,
@@ -112,7 +109,6 @@ pub fn recycle_bin_size() -> (u64, u64) {
     (info.i64Size.max(0) as u64, info.i64NumItems.max(0) as u64)
 }
 
-#[allow(dead_code)] // La Task 7 lo usa y quita este allow.
 pub fn empty_recycle_bin() -> bool {
     let flags = SHERB_NOCONFIRMATION | SHERB_NOPROGRESSUI | SHERB_NOSOUND;
     // SAFETY: sin ventana ni raíz (todas las unidades).
@@ -121,7 +117,6 @@ pub fn empty_recycle_bin() -> bool {
     hr == S_OK || hr == E_UNEXPECTED
 }
 
-#[allow(dead_code)] // La Task 7 lo usa y quita este allow.
 pub fn fixed_drives() -> Vec<Drive> {
     drive_roots()
         .into_iter()
