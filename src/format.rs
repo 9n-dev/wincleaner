@@ -45,6 +45,11 @@ pub fn duration(d: std::time::Duration) -> String {
     }
 }
 
+/// Fecha `(año, mes, día)` como "03/02/2025".
+pub fn date_dmy((y, m, d): (u16, u8, u8)) -> String {
+    format!("{d:02}/{m:02}/{y:04}")
+}
+
 /// Queda poco espacio: menos del 15 % libre. Con `total` a 0 (no se pudo leer) no avisa.
 pub fn low_space(free: u64, total: u64) -> bool {
     free as u128 * 100 < total as u128 * 15
@@ -86,6 +91,11 @@ mod tests {
         assert_eq!(duration(Duration::from_secs(5)), "5 s");
         assert_eq!(duration(Duration::from_secs(161)), "2 min 41 s");
         assert_eq!(duration(Duration::from_secs(3720)), "1 h 2 min");
+    }
+
+    #[test]
+    fn date_dmy_pads() {
+        assert_eq!(date_dmy((2025, 2, 3)), "03/02/2025");
     }
 
     #[test]
