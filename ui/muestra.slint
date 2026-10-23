@@ -1,0 +1,65 @@
+// Página de muestra con todos los componentes, solo para `examples/capturas.rs`.
+import { Palette, Type } from "theme.slint";
+import { Button, ButtonKind, Card, Pill, Note, Check, Switch, Seg, SearchBox, Bar, Spinner, AppIcon, EmptyState, ConfirmModal, Modal, Tone } from "widgets.slint";
+export { Modal }
+
+export component Muestra inherits Window {
+    width: 1100px;
+    height: 720px;
+    background: Palette.bg;
+    default-font-family: Type.family;
+    default-font-size: Type.body;
+
+    VerticalLayout {
+        padding: 24px;
+        spacing: 16px;
+
+        HorizontalLayout {
+            spacing: 12px;
+            Button { text: "Limpiar"; icon: "broom"; kind: ButtonKind.primary; }
+            Button { text: "Analizar"; icon: "chart"; }
+            Button { text: "Terminar"; icon: "stop"; kind: ButtonKind.danger; }
+            Button { text: "Desactivado"; enabled: false; }
+            Button { text: "Con foco"; init => { self.focus(); } }
+            Rectangle { }
+        }
+        HorizontalLayout {
+            spacing: 10px;
+            Pill { text: "Firmado"; kind: Tone.ok; icon: "check"; }
+            Pill { text: "Sin firma"; kind: Tone.warn; }
+            Pill { text: "Peligro"; kind: Tone.bad; }
+            Pill { text: "Neutro"; }
+            Check { checked: true; }
+            Check { }
+            Switch { checked: true; }
+            Switch { }
+            Switch { enabled: false; }
+            Spinner { }
+            AppIcon { letter: "Z"; tint: Palette.ac2; }
+            AppIcon { letter: "D"; tint: Palette.warn; }
+            Rectangle { }
+        }
+        HorizontalLayout {
+            spacing: 16px;
+            Seg { items: ["Todo", "Usuario", "Sistema"]; current: 1; }
+            SearchBox { placeholder: "Buscar programa…"; }
+            Rectangle { }
+        }
+        Bar { value: 0.62; }
+        Bar { value: 0.8; kind: Tone.warn; }
+        Bar { indeterminate: true; }
+        Note { kind: Tone.ok; title: "Todo en orden"; text: "No hemos encontrado nada raro."; }
+        Note { kind: Tone.warn; title: "Falta un permiso"; text: "Reinicia como administrador para ver más."; Button { text: "Reiniciar"; } }
+        Note { kind: Tone.bad; title: "Algo ha fallado"; text: "No se pudo leer el registro."; }
+        HorizontalLayout {
+            spacing: 16px;
+            Card {
+                Text { text: "Tarjeta"; color: Palette.tx; font-weight: 600; }
+                Text { text: "Contenido de la tarjeta."; color: Palette.mu; }
+            }
+            EmptyState { icon: "folder"; title: "Nada que mostrar"; text: "Cuando haya algo, saldrá aquí."; }
+        }
+    }
+
+    ConfirmModal { }
+}

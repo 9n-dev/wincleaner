@@ -1,4 +1,7 @@
 import { Palette, Type, Icon } from "theme.slint";
+import { ConfirmModal, Modal, ModalLine } from "widgets.slint";
+
+export { Modal, ModalLine }
 
 // Estado de la barra lateral que rellena Rust.
 export global Nav {
@@ -281,5 +284,13 @@ export component AppWindow inherits Window {
         width: root.width - sidebar.width;
         height: root.height;
         background: Palette.bg;
+    }
+
+    // El modal va sobre todo.
+    ConfirmModal {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
     }
 }

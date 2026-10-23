@@ -1,0 +1,625 @@
+// Componentes compartidos: son vistas sin lógica, con los estilos de las maquetas.
+import { Palette, Type, Icon } from "theme.slint";
+
+export enum ButtonKind { primary, secondary, danger }
+export enum Tone { ok, warn, bad, info, neutral }
+
+global Tones {
+    // Color de cada tono.
+    pure public function color(t: Tone) -> color {
+        return t == Tone.ok ? Palette.ac
+        : t == Tone.warn ? Palette.warn
+        : t == Tone.bad ? Palette.bad
+        : t == Tone.info ? Palette.info
+        : Palette.mu;
+    }
+}
+
+// Tiene foco con Tab y se activa con Espacio. Intro solo si `enter-activates`; si no,
+// el evento sube al `FocusScope` de quien lo contiene (el modal lo usa para cancelar).
+export component Button inherits FocusScope {
+    in property <string> text;
+    in property <string> icon;
+    in property <ButtonKind> kind: ButtonKind.secondary;
+    in property <bool> enter-activates: true;
+    callback clicked();
+    property <color> fg: root.kind == ButtonKind.primary ? Palette.on
+        : root.kind == ButtonKind.danger ? Palette.bad : Palette.tx;
+
+    opacity: root.enabled ? 1 : 0.4;
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { root.clicked(); }
+
+    key-pressed(e) => {
+        if (!root.enabled) { return reject; }
+        if (e.text == " " || (e.text == Key.Return && root.enter-activates)) {
+            root.clicked();
+            return accept;
+        }
+        return reject;
+    }
+
+    Rectangle {
+        border-radius: 8px;
+        border-width: 1px;
+        border-color: root.kind == ButtonKind.primary ? Palette.ac
+            : root.kind == ButtonKind.danger ? Palette.bad : Palette.line2;
+        background: root.kind == ButtonKind.primary ? (touch.has-hover && root.enabled ? Palette.ac.brighter(0.1) : Palette.ac)
+            : root.kind == ButtonKind.danger ? (touch.has-hover && root.enabled ? Palette.bad.with-alpha(0.12) : transparent)
+            : (touch.has-hover && root.enabled ? Palette.line : Palette.s2);
+    }
+
+    // Contorno de foco, 2 px fuera del botón.
+    if root.has-focus: Rectangle {
+        x: -4px;
+        y: -4px;
+        width: root.width + 8px;
+        height: root.height + 8px;
+        border-radius: 10px;
+        border-width: 2px;
+        border-color: Palette.ac2;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => {
+            root.focus();
+            root.clicked();
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        padding-top: 8px;
+        padding-bottom: 8px;
+        spacing: 8px;
+        alignment: center;
+
+        if root.icon != "": Icon {
+            name: root.icon;
+            color: root.fg;
+        }
+        Text {
+            text: root.text;
+            color: root.fg;
+            font-weight: 500;
+            vertical-alignment: center;
+        }
+    }
+}
+
+export component Card inherits Rectangle {
+    background: Palette.s1;
+    border-width: 1px;
+    border-color: Palette.line;
+    border-radius: 12px;
+
+    VerticalLayout {
+        padding: 18px;
+        spacing: 10px;
+        alignment: start;
+        @children
+    }
+}
+
+export component Pill inherits Rectangle {
+    in property <Tone> kind: Tone.neutral;
+    in property <string> text;
+    in property <string> icon;
+    property <color> c: Tones.color(root.kind);
+
+    border-radius: 11px;
+    border-width: 1px;
+    border-color: root.kind == Tone.neutral ? Palette.line2 : root.c.with-alpha(0.42);
+    horizontal-stretch: 0;
+
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        padding-top: 1px;
+        padding-bottom: 1px;
+        spacing: 4px;
+
+        if root.icon != "": Icon {
+            name: root.icon;
+            size: 12px;
+            color: root.c;
+        }
+        Text {
+            text: root.text;
+            color: root.c;
+            font-size: 11.5px;
+            vertical-alignment: center;
+        }
+    }
+}
+
+export component Note inherits Rectangle {
+    in property <Tone> kind: Tone.info;
+    in property <string> title;
+    in property <string> text;
+    property <color> c: Tones.color(root.kind);
+
+    border-radius: 10px;
+    border-width: 1px;
+    border-color: root.c.with-alpha(0.47);
+    background: Palette.s1.mix(root.c, 0.92);
+
+    HorizontalLayout {
+        padding: 12px;
+        padding-left: 14px;
+        padding-right: 14px;
+        spacing: 12px;
+
+        VerticalLayout {
+            alignment: start;
+            Icon {
+                name: root.kind == Tone.ok ? "shieldok" : root.kind == Tone.info ? "info" : "warn";
+                color: root.c;
+                size: 18px;
+            }
+        }
+        VerticalLayout {
+            spacing: 2px;
+            horizontal-stretch: 1;
+            if root.title != "": Text {
+                text: root.title;
+                color: Palette.tx;
+                font-weight: 600;
+                wrap: word-wrap;
+            }
+            Text {
+                text: root.text;
+                color: Palette.mu;
+                wrap: word-wrap;
+            }
+        }
+        // Acciones a la derecha.
+        HorizontalLayout {
+            spacing: 8px;
+            alignment: end;
+            @children
+        }
+    }
+}
+
+export component Check inherits FocusScope {
+    in-out property <bool> checked;
+    callback toggled(bool);
+    width: 18px;
+    height: 18px;
+    accessible-role: checkbox;
+    accessible-checked: root.checked;
+    accessible-action-default => { root.toggle(); }
+    function toggle() {
+        root.checked = !root.checked;
+        root.toggled(root.checked);
+    }
+    key-pressed(e) => {
+        if (root.enabled && e.text == " ") { root.toggle(); return accept; }
+        return reject;
+    }
+
+    Rectangle {
+        border-radius: 5px;
+        border-width: 1.5px;
+        border-color: root.checked ? Palette.ac : Palette.line2;
+        background: root.checked ? Palette.ac : transparent;
+    }
+    if root.checked: Icon {
+        x: 3px;
+        y: 3px;
+        name: "check";
+        size: 12px;
+        stroke-width: 3px;
+        color: Palette.on;
+    }
+    if root.has-focus: Rectangle {
+        x: -3px;
+        y: -3px;
+        width: root.width + 6px;
+        height: root.height + 6px;
+        border-radius: 7px;
+        border-width: 2px;
+        border-color: Palette.ac2;
+    }
+    TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => {
+            root.focus();
+            root.toggle();
+        }
+    }
+}
+
+export component Switch inherits FocusScope {
+    in-out property <bool> checked;
+    callback toggled(bool);
+    width: 34px;
+    height: 20px;
+    opacity: root.enabled ? 1 : 0.4;
+    accessible-role: switch;
+    accessible-checked: root.checked;
+    accessible-action-default => { root.toggle(); }
+    function toggle() {
+        root.checked = !root.checked;
+        root.toggled(root.checked);
+    }
+    key-pressed(e) => {
+        if (root.enabled && e.text == " ") { root.toggle(); return accept; }
+        return reject;
+    }
+
+    Rectangle {
+        border-radius: 10px;
+        background: root.checked ? Palette.ac : Palette.line2;
+    }
+    Rectangle {
+        y: 3px;
+        x: root.checked ? 17px : 3px;
+        width: 14px;
+        height: 14px;
+        border-radius: 7px;
+        background: root.checked ? Palette.on : Palette.mu;
+        animate x { duration: 120ms; }
+    }
+    if root.has-focus: Rectangle {
+        x: -3px;
+        y: -3px;
+        width: root.width + 6px;
+        height: root.height + 6px;
+        border-radius: 13px;
+        border-width: 2px;
+        border-color: Palette.ac2;
+    }
+    TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => {
+            root.focus();
+            root.toggle();
+        }
+    }
+}
+
+export component Seg inherits Rectangle {
+    in property <[string]> items;
+    in-out property <int> current;
+    callback selected(int);
+    background: Palette.s1;
+    border-width: 1px;
+    border-color: Palette.line;
+    border-radius: 9px;
+    horizontal-stretch: 0;
+
+    HorizontalLayout {
+        padding: 3px;
+        spacing: 2px;
+
+        for item[i] in root.items: Rectangle {
+            border-radius: 7px;
+            background: i == root.current ? Palette.s2 : transparent;
+
+            HorizontalLayout {
+                padding-left: 14px;
+                padding-right: 14px;
+                padding-top: 5px;
+                padding-bottom: 5px;
+
+                Text {
+                    text: item;
+                    color: i == root.current ? Palette.tx : Palette.mu;
+                    vertical-alignment: center;
+                }
+            }
+            accessible-role: tab;
+            accessible-label: item;
+            accessible-action-default => {
+                root.current = i;
+                root.selected(i);
+            }
+            TouchArea {
+                mouse-cursor: pointer;
+                clicked => {
+                    root.current = i;
+                    root.selected(i);
+                }
+            }
+        }
+    }
+}
+
+export component SearchBox inherits Rectangle {
+    in-out property <string> text <=> input.text;
+    in property <string> placeholder;
+    min-width: 180px;
+    preferred-width: 260px;
+    background: Palette.s1;
+    border-width: 1px;
+    border-color: input.has-focus ? Palette.ac2 : Palette.line2;
+    border-radius: 8px;
+
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        padding-top: 7px;
+        padding-bottom: 7px;
+        spacing: 8px;
+
+        Icon {
+            name: "search";
+            color: Palette.fa;
+        }
+        Rectangle {
+            horizontal-stretch: 1;
+            if input.text == "": Text {
+                x: 0;
+                width: parent.width;
+                text: root.placeholder;
+                color: Palette.fa;
+                vertical-alignment: center;
+            }
+            input := TextInput {
+                x: 0;
+                width: parent.width;
+                color: Palette.tx;
+                vertical-alignment: center;
+                single-line: true;
+                accessible-placeholder-text: root.placeholder;
+            }
+        }
+    }
+}
+
+export component Bar inherits Rectangle {
+    // 0..1
+    in property <float> value;
+    in property <Tone> kind: Tone.ok;
+    in property <bool> indeterminate;
+    height: 6px;
+    border-radius: 3px;
+    background: Palette.s2;
+    clip: true;
+    accessible-role: progress-indicator;
+    accessible-value: root.indeterminate ? "" : round(root.value * 100);
+
+    // Indeterminada: una franja que va y viene.
+    property <float> phase: Math.abs(Math.mod(animation-tick() / 1.4s, 2) - 1);
+
+    Rectangle {
+        height: parent.height;
+        border-radius: 3px;
+        background: root.indeterminate ? Palette.ac2 : root.kind == Tone.warn ? Palette.warn : Palette.ac;
+        width: root.indeterminate ? parent.width * 0.3 : parent.width * Math.min(Math.max(root.value, 0), 1);
+        x: root.indeterminate ? (parent.width * 0.7) * root.phase : 0;
+    }
+}
+
+// Anillo con un arco que gira.
+export component Spinner inherits Rectangle {
+    width: 16px;
+    height: 16px;
+    accessible-role: progress-indicator;
+    property <angle> a: animation-tick() / 1s * 360deg;
+
+    Path {
+        width: 16px;
+        height: 16px;
+        viewbox-width: 16;
+        viewbox-height: 16;
+        fill: transparent;
+        stroke: Palette.line2;
+        stroke-width: 2px;
+        commands: "M8 1a7 7 0 1 0 0.01 0z";
+    }
+    Path {
+        width: 16px;
+        height: 16px;
+        viewbox-width: 16;
+        viewbox-height: 16;
+        fill: transparent;
+        stroke: Palette.ac2;
+        stroke-width: 2px;
+        stroke-line-cap: round;
+        // Arco de 90° que gira: sin rotación de Path, se recalculan los extremos.
+        commands: "M" + (8 + 7 * Math.sin(root.a)) + " " + (8 - 7 * Math.cos(root.a))
+            + "A7 7 0 0 1 " + (8 + 7 * Math.sin(root.a + 90deg)) + " " + (8 - 7 * Math.cos(root.a + 90deg));
+    }
+}
+
+// Icono de un programa: la imagen real, o la inicial sobre un color.
+export component AppIcon inherits Rectangle {
+    in property <image> img;
+    in property <string> letter;
+    in property <color> tint: Palette.ac;
+    width: 30px;
+    height: 30px;
+    border-radius: 8px;
+    background: root.img.width > 0 ? transparent : root.tint;
+    clip: true;
+
+    if root.img.width > 0: Image {
+        source: root.img;
+        width: parent.width;
+        height: parent.height;
+    }
+    if root.img.width == 0: Text {
+        text: root.letter;
+        color: #171e23;
+        font-size: 14px;
+        font-weight: 700;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+export component EmptyState inherits Rectangle {
+    in property <string> icon;
+    in property <string> title;
+    in property <string> text;
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: Palette.line2;
+
+    VerticalLayout {
+        alignment: center;
+        spacing: 6px;
+        padding: 40px;
+
+        HorizontalLayout {
+            alignment: center;
+            Icon {
+                name: root.icon;
+                size: 40px;
+                stroke-width: 1.3px;
+                color: Palette.line2;
+            }
+        }
+        Text {
+            text: root.title;
+            color: Palette.tx;
+            font-weight: 600;
+            horizontal-alignment: center;
+        }
+        Text {
+            text: root.text;
+            color: Palette.mu;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+    }
+}
+
+export struct ModalLine { label: string, value: string }
+
+// Estado del modal de confirmación; lo rellena Rust.
+export global Modal {
+    in-out property <bool> open;
+    in property <string> title;
+    in property <string> text;
+    in property <[ModalLine]> lines;
+    in property <string> note;
+    in property <string> confirm-text: "Aceptar";
+    in property <bool> danger;
+    callback confirm();
+    callback cancel();
+}
+
+// Se pinta sobre todo. Intro y Esc cancelan siempre, tenga el foco quien lo tenga
+// (los botones no activan con Intro): solo se confirma con clic o Espacio.
+export component ConfirmModal inherits Rectangle {
+    if Modal.open: FocusScope {
+        init => { cancel-btn.focus(); }
+        key-pressed(e) => {
+            if (e.text == Key.Return || e.text == Key.Escape) {
+                Modal.cancel();
+                Modal.open = false;
+                return accept;
+            }
+            return reject;
+        }
+
+        Rectangle {
+            background: #0a0e11.with-alpha(0.6);
+            // Se come los clics: lo de detrás no se toca con el modal abierto.
+            TouchArea { }
+        }
+
+        Rectangle {
+            width: min(440px, parent.width * 0.9);
+            height: box.preferred-height + 44px;
+            background: Palette.s1;
+            border-width: 1px;
+            border-color: Palette.line2;
+            border-radius: 14px;
+            drop-shadow-blur: 50px;
+            drop-shadow-offset-y: 20px;
+            drop-shadow-color: #00000073;
+            accessible-role: groupbox;
+            accessible-label: Modal.title;
+
+            box := VerticalLayout {
+                padding: 22px;
+                spacing: 8px;
+
+                Text {
+                    text: Modal.title;
+                    color: Palette.tx;
+                    font-size: 18px;
+                    font-weight: 600;
+                    wrap: word-wrap;
+                }
+                if Modal.text != "": Text {
+                    text: Modal.text;
+                    color: Palette.mu;
+                    wrap: word-wrap;
+                }
+                if Modal.lines.length > 0: Rectangle {
+                    height: lines-box.preferred-height + 1px;
+                    Rectangle {
+                        y: 0;
+                        height: 1px;
+                        background: Palette.line;
+                    }
+                    lines-box := VerticalLayout {
+                        padding-top: 9px;
+                        padding-bottom: 8px;
+                        for l in Modal.lines: HorizontalLayout {
+                            padding-top: 3px;
+                            padding-bottom: 3px;
+                            Text {
+                                text: l.label;
+                                color: Palette.tx;
+                                horizontal-stretch: 1;
+                            }
+                            Text {
+                                text: l.value;
+                                color: Palette.mu;
+                                horizontal-alignment: right;
+                            }
+                        }
+                    }
+                    Rectangle {
+                        y: parent.height - 1px;
+                        height: 1px;
+                        background: Palette.line;
+                    }
+                }
+                if Modal.note != "": Text {
+                    text: Modal.note;
+                    color: Palette.fa;
+                    font-size: Type.label;
+                    wrap: word-wrap;
+                }
+                HorizontalLayout {
+                    padding-top: 10px;
+                    spacing: 8px;
+                    alignment: end;
+
+                    cancel-btn := Button {
+                        text: "Cancelar";
+                        enter-activates: false;
+                        clicked => {
+                            Modal.cancel();
+                            Modal.open = false;
+                        }
+                    }
+                    Button {
+                        text: Modal.confirm-text;
+                        kind: Modal.danger ? ButtonKind.danger : ButtonKind.primary;
+                        enter-activates: false;
+                        clicked => {
+                            Modal.confirm();
+                            Modal.open = false;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
