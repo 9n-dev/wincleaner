@@ -1,5 +1,8 @@
 //! Capa fina sobre Win32: entorno, permisos, papelera, unidades y Explorador.
 
+pub mod icon;
+pub mod reg;
+
 use std::ffi::{OsStr, OsString};
 use std::iter::once;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};

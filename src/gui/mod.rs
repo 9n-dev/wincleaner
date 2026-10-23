@@ -2,6 +2,7 @@
 
 mod analyze;
 mod clean;
+mod programs;
 mod summary;
 
 use slint::{CloseRequestResponse, ComponentHandle};
@@ -34,5 +35,6 @@ pub fn run() {
     summary::init(&app);
     let _clean = clean::Clean::new(&app);
     analyze::Analyze::new(&app);
+    programs::Programs::new(&app);
     let _ = app.run();
 }

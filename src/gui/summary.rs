@@ -42,6 +42,14 @@ pub fn set_clean(app: &AppWindow, bytes: u64, cats: usize, calculating: bool) {
     d.set_clean_text(text.into());
 }
 
+/// Tarjeta de Programas: `title` es «86 instalados · 38,2 GB»; `biggest`, el que más ocupa.
+pub fn set_programs(app: &AppWindow, title: &str, biggest: Option<(&str, u64)>) {
+    let d = app.global::<SummaryData>();
+    d.set_programs_title(title.into());
+    let text = biggest.map(|(n, s)| format!("El más grande: {n} ({})", format::bytes(s)));
+    d.set_programs_text(text.unwrap_or_default().into());
+}
+
 /// Conecta la sección y lee las unidades por primera vez.
 pub fn init(app: &AppWindow) {
     let d = app.global::<SummaryData>();

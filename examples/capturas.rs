@@ -167,6 +167,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             guarda(&format!("wcv2-{nombre}{suffix}"), &headless::render(app.window(), w, h), w, h)?;
         }
     }
+
+    // Programas, con los datos de `PROGS` de las maquetas.
+    use wincleaner::ui::{ProgramRow, ProgramsData};
+    let progs = [
+        (0x8fb0c4, "S", "Steam", "Valve Corporation", "12,4 GB", "03/02/2025", true),
+        (0xd68a8a, "A", "Adobe Acrobat (64-bit)", "Adobe", "1,1 GB", "14/09/2026", true),
+        (0x8fc2c0, "Z", "Zoom Workplace", "Zoom Communications", "412 MB", "02/10/2026", false),
+        (0xc4a7b4, "O", "OBS Studio", "OBS Project", "388 MB", "21/07/2026", true),
+        (0x8fb0c4, "V", "Visual Studio Code", "Microsoft Corporation", "372 MB", "11/10/2026", false),
+        (0xa9c2b8, "S", "Spotify", "Spotify AB", "310 MB", "19/10/2026", false),
+        (0xd6b38a, "V", "VLC media player", "VideoLAN", "168 MB", "05/05/2026", true),
+        (0x9ba6ad, "7", "7-Zip 24.08 (x64)", "Igor Pavlov", "5,9 MB", "17/08/2024", true),
+    ]
+    .map(|(c, l, n, p, s, d, adm): (u32, _, _, _, _, _, _)| ProgramRow {
+        name: n.into(),
+        publisher: p.into(),
+        date: d.into(),
+        size: s.into(),
+        icon: Default::default(),
+        letter: l.into(),
+        tint: slint::Color::from_rgb_u8((c >> 16) as u8, (c >> 8) as u8, c as u8),
+        needs_admin: adm,
+        blocked: false,
+    });
+    let data = app.global::<ProgramsData>();
+    data.set_subtitle("86 instalados · 38,2 GB".into());
+    data.set_loading(false);
+    app.set_section(3);
+    for (nombre, query, rows, selected) in
+        [("programas", "", progs.to_vec(), 2), ("programas-sin-resultados", "photoshp", Vec::new(), -1)]
+    {
+        data.set_query(query.into());
+        data.set_rows(model(rows));
+        data.set_selected(selected);
+        for (suffix, w, h) in [("", 1100, 720), ("-min", 880, 600)] {
+            guarda(&format!("wcv2-{nombre}{suffix}"), &headless::render(app.window(), w, h), w, h)?;
+        }
+    }
     app.set_section(0);
 
     // Todos los componentes, con el modal abierto encima.

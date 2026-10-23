@@ -9,7 +9,7 @@ slint = { version = "=1.18.1", default-features = false, features = ["std", "com
 
 [target.'cfg(windows)'.dependencies]
 slint = { version = "=1.18.1", default-features = false, features = ["backend-winit", "accessibility"] }
-winapi = { version = "0.3", features = ["shellapi", "shlobj", "knownfolders", "combaseapi", "objbase", "fileapi", "minwinbase", "winbase", "winnt", "winuser", "shtypes", "winerror"] }
+winapi = { version = "0.3", features = ["shellapi", "shlobj", "knownfolders", "combaseapi", "objbase", "fileapi", "minwinbase", "winbase", "winnt", "winuser", "shtypes", "winerror", "winreg", "wingdi", "processenv"] }
 
 [dev-dependencies]
 png = "0.18"

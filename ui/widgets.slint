@@ -339,6 +339,8 @@ export component Seg inherits Rectangle {
 export component SearchBox inherits Rectangle {
     in-out property <string> text <=> input.text;
     in property <string> placeholder;
+    // Cada vez que se escribe o se borra algo.
+    callback edited();
     min-width: 180px;
     preferred-width: 260px;
     background: Palette.s1;
@@ -373,6 +375,7 @@ export component SearchBox inherits Rectangle {
                 vertical-alignment: center;
                 single-line: true;
                 accessible-placeholder-text: root.placeholder;
+                edited => { root.edited(); }
             }
         }
     }
