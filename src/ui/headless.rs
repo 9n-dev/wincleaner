@@ -53,10 +53,10 @@ mod tests {
         let wide = render(app.window(), 1100, 720);
         assert_eq!(wide.len(), 1100 * 720 * 4);
         assert_eq!(pixel(&wide, 1100, 150, 400), s1);
-        assert_eq!(pixel(&wide, 1100, 600, 400), bg);
+        assert_eq!(pixel(&wide, 1100, 600, 700), bg);
         let min = render(app.window(), 880, 600);
         assert_eq!(pixel(&min, 880, 30, 400), s1);
-        assert_eq!(pixel(&min, 880, 150, 400), bg);
+        assert_eq!(pixel(&min, 880, 70, 400), bg);
     }
 
     /// Un clic en la casilla escribe en el modelo y avisa con su índice; Rust decide.

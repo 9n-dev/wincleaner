@@ -46,6 +46,13 @@ impl State {
         (0..self.cats.len()).filter(|&i| self.scans[i].is_some() && self.checked[i]).collect()
     }
 
+    /// Bytes marcados y nº de categorías marcadas con algo que borrar, para el Resumen.
+    fn totals(&self) -> (u64, usize) {
+        let sel = self.checked();
+        let n = sel.iter().filter(|&&i| self.items(i) > 0 || self.bytes(i) > 0).count();
+        (sel.iter().map(|&i| self.bytes(i)).sum(), n)
+    }
+
     fn can_clean(&self) -> bool {
         // Una categoría con archivos de 0 B también se puede limpiar.
         self.pending == 0 && !self.cleaning && self.checked().iter().any(|&i| self.items(i) > 0 || self.bytes(i) > 0)
@@ -168,16 +175,6 @@ impl Clean {
         c
     }
 
-    /// Bytes marcados y nº de categorías marcadas con algo que borrar, para el Resumen.
-    #[expect(dead_code, reason = "lo usa el Resumen, en la Task 4")]
-    pub fn totals(&self) -> (u64, usize) {
-        STATE.with_borrow(|st| {
-            let sel = st.checked();
-            let n = sel.iter().filter(|&&i| st.items(i) > 0 || st.bytes(i) > 0).count();
-            (sel.iter().map(|&i| st.bytes(i)).sum(), n)
-        })
-    }
-
     /// Lista, total, botón y fase a partir del estado.
     fn refresh(app: &AppWindow, st: &State) {
         let data = app.global::<CleanData>();
@@ -185,8 +182,10 @@ impl Clean {
         for i in 0..st.cats.len() {
             rows.set_row_data(i, row(st, i));
         }
-        let total: u64 = st.checked().iter().map(|&i| st.bytes(i)).sum();
+        let (total, cats) = st.totals();
         data.set_total(format::bytes(total).into());
+        // Tarjeta del Resumen: se actualiza con cada escaneo y cada borrado.
+        super::summary::set_clean(app, total, cats, st.pending > 0);
         data.set_can_clean(st.can_clean());
         data.set_phase(if st.cleaning {
             CleanPhase::Cleaning

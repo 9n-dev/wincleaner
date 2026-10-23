@@ -30,6 +30,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let app = AppWindow::new()?;
+    // Resumen, con los datos de `inicio()` de las maquetas.
+    use wincleaner::ui::{DriveRow, SummaryData};
+    let data = app.global::<SummaryData>();
+    data.set_drives(
+        std::rc::Rc::new(slint::VecModel::from(vec![
+            DriveRow { name: "C:".into(), label: "Sistema".into(), text: "64 GB libres de 476 GB".into(), used: 0.87, low: true },
+            DriveRow { name: "D:".into(), label: "Datos".into(), text: "1,2 TB libres de 1,8 TB".into(), used: 0.34, low: false },
+        ]))
+        .into(),
+    );
+    data.set_clean_total("3,0 GB".into());
+    data.set_clean_text("se pueden liberar en 6 categorías".into());
+    data.set_security_title("Sin revisar todavía".into());
+    data.set_security_text("Defender activo · firmas de hace 2 días".into());
+    data.set_procs_title("128 procesos · 5,4 GB".into());
+    data.set_procs_text("11 programas arrancan con Windows".into());
+    data.set_programs_title("86 instalados · 38,2 GB".into());
+    data.set_programs_text("El más grande: Steam (12,4 GB)".into());
     for (suffix, w, h) in [("", 1100, 720), ("-min", 880, 600)] {
         guarda(&format!("wcv2-inicio{suffix}"), &headless::render(app.window(), w, h), w, h)?;
     }

@@ -1,9 +1,10 @@
 import { Palette, Type, Icon } from "theme.slint";
 import { ConfirmModal, Modal, ModalLine } from "widgets.slint";
+import { SummaryPage, SummaryData, DriveRow } from "pages/summary.slint";
 import { AnalyzePage, AnalyzeData, DirRow } from "pages/analyze.slint";
 import { CleanPage, CleanData, CleanPhase, CatState, CategoryRow, ReportRow } from "pages/clean.slint";
 
-export { Modal, ModalLine, CleanData, CleanPhase, CatState, CategoryRow, ReportRow, AnalyzeData, DirRow }
+export { Modal, ModalLine, CleanData, CleanPhase, CatState, CategoryRow, ReportRow, AnalyzeData, DirRow, SummaryData, DriveRow }
 
 // Estado de la barra lateral que rellena Rust.
 export global Nav {
@@ -133,6 +134,11 @@ export component AppWindow inherits Window {
     // 0 Resumen, 1 Limpiar, 2 Analizar, 3 Programas, 4 Procesos, 5 Seguridad.
     in-out property <int> section;
     property <bool> compact: root.width < 1000px;
+
+    // Al volver al Resumen se vuelven a leer las unidades.
+    changed section => {
+        if (root.section == 0) { SummaryData.refresh(); }
+    }
 
     title: root.admin ? "WinCleaner (administrador)" : "WinCleaner";
     preferred-width: 1100px;
@@ -290,6 +296,11 @@ export component AppWindow inherits Window {
         height: root.height;
         background: Palette.bg;
 
+        if root.section == 0: SummaryPage {
+            width: parent.width;
+            height: parent.height;
+            compact: root.compact;
+        }
         if root.section == 1: CleanPage {
             width: parent.width;
             height: parent.height;

@@ -2,6 +2,7 @@
 
 mod analyze;
 mod clean;
+mod summary;
 
 use slint::{CloseRequestResponse, ComponentHandle};
 use wincleaner::ui::{self, AppWindow, Nav};
@@ -30,6 +31,7 @@ pub fn run() {
             let _ = slint::quit_event_loop();
         }
     });
+    summary::init(&app);
     let _clean = clean::Clean::new(&app);
     analyze::Analyze::new(&app);
     let _ = app.run();

@@ -39,7 +39,6 @@ unsafe extern "system" {
     fn IsUserAnAdmin() -> BOOL;
 }
 
-#[expect(dead_code, reason = "label y total los usa el Resumen, en la Task 5")]
 pub struct Drive {
     pub root: String,
     /// Nombre del volumen; vacío si no se pudo leer.

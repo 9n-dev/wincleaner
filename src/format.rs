@@ -45,9 +45,21 @@ pub fn duration(d: std::time::Duration) -> String {
     }
 }
 
+/// Queda poco espacio: menos del 15 % libre. Con `total` a 0 (no se pudo leer) no avisa.
+pub fn low_space(free: u64, total: u64) -> bool {
+    free as u128 * 100 < total as u128 * 15
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn low_space_threshold() {
+        assert!(low_space(14, 100));
+        assert!(!low_space(15, 100));
+        assert!(!low_space(0, 0));
+    }
 
     #[test]
     fn bytes_examples() {
