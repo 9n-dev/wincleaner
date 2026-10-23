@@ -4,11 +4,11 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::SystemTime;
 
-use slint::{CloseRequestResponse, ComponentHandle, Model, ModelRc, VecModel, Weak};
+use slint::{ComponentHandle, Model, ModelRc, VecModel, Weak};
 use wincleaner::categories::{Category, CategoryId, Status, build_categories};
 use wincleaner::clean::{self, DeleteReport, ScanResult};
 use wincleaner::format;
-use wincleaner::ui::{AppWindow, CatState, CategoryRow, CleanData, CleanPhase, Modal, ModalLine, ReportRow};
+use wincleaner::ui::{AppWindow, CatState, CategoryRow, CleanData, CleanPhase, Confirm, ModalLine, ReportRow, confirm};
 
 use crate::win;
 
@@ -156,16 +156,13 @@ impl Clean {
         let k = c.clone();
         data.on_review(move || k.review());
         let k = c.clone();
+        // Sale del informe: el escaneo que lanzó `cleaned` ya está en curso o terminado.
         data.on_recalc(move || {
-            STATE.with_borrow_mut(|st| st.report = false);
-            k.start_scan();
-        });
-        app.window().on_close_requested(|| {
-            if STATE.with_borrow(|st| st.cleaning) {
-                CloseRequestResponse::KeepWindowShown
-            } else {
-                CloseRequestResponse::HideWindow
-            }
+            let Some(app) = k.0.upgrade() else { return };
+            STATE.with_borrow_mut(|st| {
+                st.report = false;
+                Self::refresh(&app, st);
+            });
         });
         c.start_scan();
         c
@@ -301,35 +298,35 @@ impl Clean {
         }) else {
             return;
         };
-        let modal = app.global::<Modal>();
-        modal.set_title(title.into());
-        modal.set_text("Se va a borrar el contenido de estas categorías:".into());
-        modal.set_lines(model(lines));
-        modal.set_note("Los archivos en uso se saltarán. Esto no se puede deshacer.".into());
-        modal.set_confirm_text("Borrar".into());
-        modal.set_danger(true);
         let k = self.clone();
-        modal.on_confirm(move || k.clean(generation, &sel));
-        modal.on_cancel(|| {});
-        modal.set_open(true);
+        let ask = Confirm {
+            title: &title,
+            text: "Se va a borrar el contenido de estas categorías:",
+            lines,
+            note: "Los archivos en uso se saltarán. Esto no se puede deshacer.",
+            confirm_text: "Borrar",
+            danger: true,
+        };
+        confirm(&app, ask, move || k.clean(generation, &sel));
     }
 
     /// Borra lo confirmado en un hilo, si nada ha cambiado desde que se abrió el modal.
     fn clean(&self, generation: u64, sel: &[usize]) {
         let Some(app) = self.0.upgrade() else { return };
-        let Some(jobs) = STATE.with_borrow_mut(|st| {
+        let Some((first, jobs)) = STATE.with_borrow_mut(|st| {
             if st.generation != generation || !st.can_clean() || st.checked() != sel {
                 return None;
             }
-            // `can_clean` asegura que cada marcada tiene escaneo: `jobs` no queda vacío.
+            // `can_clean` asegura que cada marcada tiene escaneo; aun así, sin trabajos no
+            // se marca `cleaning`, que bloquearía la ventana para siempre.
             let jobs: Vec<(Category, ScanResult)> =
                 sel.iter().filter_map(|&i| Some((st.cats[i].clone(), st.scans[i].take()?))).collect();
+            let first = jobs.first()?.0.id;
             st.cleaning = true;
-            Some(jobs)
+            Some((first, jobs))
         }) else {
             return;
         };
-        let Some(first) = jobs.first().map(|(c, _)| c.id) else { return };
         let total: u64 = jobs.iter().map(|(_, s)| s.bytes).sum();
         app.set_locked(true);
         app.global::<CleanData>().set_phase(CleanPhase::Cleaning);

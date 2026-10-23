@@ -89,3 +89,38 @@ fn tab_never_leaves_the_modal() {
     assert_eq!((ok.get(), no.get(), fondo.get()), (0, 1, 0));
     assert!(!m.get_open());
 }
+
+/// Tras confirmar o cancelar, el modal queda desarmado: confirmar otro modal sin acción
+/// no repite la anterior, y cada `confirm` solo ejecuta la suya.
+#[test]
+fn confirm_runs_its_action_once() {
+    use wincleaner::ui::{Confirm, confirm, install_modal};
+    let ask = || Confirm { title: "¿Borrar?", text: "", lines: vec![], note: "", confirm_text: "Borrar", danger: true };
+    headless::init();
+    let app = AppWindow::new().unwrap();
+    install_modal(&app);
+    let m = app.global::<Modal>();
+    let (a, b) = (Rc::new(Cell::new(0)), Rc::new(Cell::new(0)));
+
+    let c = a.clone();
+    confirm(&app, ask(), move || c.set(c.get() + 1));
+    assert!(m.get_open());
+    m.invoke_confirm();
+    m.invoke_confirm();
+    assert_eq!(a.get(), 1);
+
+    let c = a.clone();
+    confirm(&app, ask(), move || c.set(c.get() + 1));
+    m.invoke_cancel();
+    m.invoke_confirm();
+    assert_eq!(a.get(), 1);
+
+    let c = b.clone();
+    confirm(&app, ask(), move || c.set(c.get() + 1));
+    // Con el teclado, como el usuario: Tab al botón de confirmar y Espacio.
+    headless::render(app.window(), 1100, 720);
+    key(&app, "\t");
+    key(&app, " ");
+    assert_eq!((a.get(), b.get()), (1, 1));
+    assert!(!m.get_open());
+}
