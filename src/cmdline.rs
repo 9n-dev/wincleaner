@@ -28,15 +28,20 @@ pub fn split_exe(cmd: &str) -> Option<(String, String)> {
 /// Todo lo demás (relativas con carpeta, `C:x`, UNC, `\\?\`, `\x`) da `None`, para que nada
 /// se resuelva por `PATH` ni por la carpeta actual. La existencia la comprueba la capa Win32.
 pub fn resolve(exe: &str, system32: &str) -> Option<String> {
-    let b = exe.as_bytes();
-    if b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/') {
+    let abs = |x: &str| {
+        let b = x.as_bytes();
+        b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/')
+    };
+    if !abs(system32) || exe.chars().any(char::is_control) {
+        return None;
+    }
+    if abs(exe) {
         return Some(exe.to_string());
     }
     let suelto = !exe.is_empty()
         && exe != "."
         && exe != ".."
-        && !exe.contains(['\\', '/', ':'])
-        && !exe.chars().any(char::is_control);
+        && !exe.contains(['\\', '/', ':']);
     suelto.then(|| format!("{}\\{exe}", system32.trim_end_matches('\\')))
 }
 
@@ -73,7 +78,9 @@ mod tests {
         let s = "C:\\Windows\\System32";
         assert_eq!(resolve("rundll32.exe", s), Some("C:\\Windows\\System32\\rundll32.exe".into()));
         assert_eq!(resolve("D:\\a\\u.exe", s), Some("D:\\a\\u.exe".into()));
-        for malo in ["sub\\x.exe", "\\\\srv\\x.exe", "\\\\?\\C:\\x.exe", "C:x.exe", "\\x.exe", "..", "", "a/b.exe"] {
+        assert_eq!(resolve("x.exe", "System32"), None);
+        assert_eq!(resolve("x.exe", "\\\\srv\\s"), None);
+        for malo in ["sub\\x.exe", "\\\\srv\\x.exe", "\\\\?\\C:\\x.exe", "C:x.exe", "\\x.exe", "..", "", "a/b.exe", "C:\\a\u{7}.exe"] {
             assert_eq!(resolve(malo, s), None, "{malo}");
         }
     }

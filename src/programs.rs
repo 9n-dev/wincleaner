@@ -55,20 +55,22 @@ fn is_guid(s: &str) -> bool {
         && s[1..s.len() - 1].chars().all(|c| c.is_ascii_hexdigit() || c == '-')
 }
 
-/// GUID de un `msiexec /I{…}` o `/X{…}`.
-fn msi_guid(exe: &str, args: &str) -> Option<String> {
-    let nombre = exe.rsplit(['\\', '/']).next()?.to_ascii_lowercase();
-    if nombre != "msiexec" && nombre != "msiexec.exe" {
-        return None;
-    }
-    let bajo = args.to_ascii_lowercase();
-    if !bajo.split_whitespace().any(|t| t.starts_with("/i") || t.starts_with("/x")) {
-        return None;
-    }
-    let ini = args.find('{')?;
-    let fin = ini + args[ini..].find('}')?;
-    let g = &args[ini..=fin];
-    is_guid(g).then(|| g.to_string())
+fn is_msiexec(exe: &str) -> bool {
+    let nombre = exe.rsplit(['\\', '/']).next().unwrap_or("");
+    nombre.eq_ignore_ascii_case("msiexec") || nombre.eq_ignore_ascii_case("msiexec.exe")
+}
+
+/// GUID de un `/I`, `/X`, `-I` o `-X` (pegado `/I{…}` o en el token siguiente).
+fn msi_guid(args: &str) -> Option<String> {
+    let t: Vec<&str> = args.split_whitespace().collect();
+    t.iter().enumerate().find_map(|(i, tok)| {
+        let b = tok.as_bytes();
+        if b.len() < 2 || !matches!(b[0], b'/' | b'-') || !matches!(b[1].to_ascii_lowercase(), b'i' | b'x') {
+            return None;
+        }
+        let g = if b.len() == 2 { t.get(i + 1).copied()? } else { &tok[2..] };
+        is_guid(g).then(|| g.to_string())
+    })
 }
 
 pub fn uninstall_command(e: &RawEntry, system32: &str) -> Result<UninstallCmd, UninstallError> {
@@ -81,8 +83,9 @@ pub fn uninstall_command(e: &RawEntry, system32: &str) -> Result<UninstallCmd, U
     }
     let cmd = e.uninstall_string.as_deref().unwrap_or("");
     let (exe, args) = split_exe(cmd).ok_or(UninstallError::Missing)?;
-    if let Some(g) = msi_guid(&exe, &args) {
-        return msi(&g);
+    if is_msiexec(&exe) {
+        // msiexec solo se lanza para desinstalar un GUID: nada de /i con rutas, /a, /p…
+        return msi_guid(&args).map_or(Err(UninstallError::BadPath), |g| msi(&g));
     }
     let exe = resolve(&exe, system32).ok_or(UninstallError::BadPath)?;
     Ok(UninstallCmd { exe, args })
@@ -218,6 +221,21 @@ mod tests {
     #[test]
     fn uninstall_msi_rejects_injection() {
         let e = RawEntry { uninstall_string: Some("msiexec /x {AB} & calc".into()), ..raw() };
+        assert_eq!(uninstall_command(&e, S).unwrap().args, "/x {AB}");
+    }
+
+    #[test]
+    fn uninstall_msiexec_without_guid_is_bad() {
+        for cmd in [
+            "msiexec /i \\\\srv\\x.msi /qn",
+            "MsiExec.exe -i C:\\x.msi",
+            "C:\\Windows\\System32\\msiexec.exe /package x.msi",
+            "msiexec /invalid {AB}",
+        ] {
+            let e = RawEntry { uninstall_string: Some(cmd.into()), ..raw() };
+            assert_eq!(uninstall_command(&e, S), Err(UninstallError::BadPath), "{cmd}");
+        }
+        let e = RawEntry { uninstall_string: Some("msiexec -X {AB}".into()), ..raw() };
         assert_eq!(uninstall_command(&e, S).unwrap().args, "/x {AB}");
     }
 
