@@ -1,0 +1,285 @@
+import { Palette, Type, Icon } from "theme.slint";
+
+// Estado de la barra lateral que rellena Rust.
+export global Nav {
+    in property <int> security-badge;
+    callback relaunch-admin();
+}
+
+component NavItem {
+    in property <string> icon;
+    in property <string> label;
+    in property <bool> active;
+    in property <bool> compact;
+    in property <bool> enabled;
+    in property <int> badge;
+    callback clicked();
+    height: 38px;
+    opacity: root.enabled ? 1 : 0.35;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { root.clicked(); }
+
+    Rectangle {
+        border-radius: 8px;
+        background: root.active ? Palette.s2 : touch.has-hover && root.enabled ? Palette.s2.with-alpha(0.5) : transparent;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+
+    HorizontalLayout {
+        padding-left: root.compact ? 0 : 10px;
+        padding-right: root.compact ? 0 : 10px;
+        spacing: 12px;
+        alignment: root.compact ? center : stretch;
+
+        Icon {
+            name: root.icon;
+            size: 18px;
+            color: root.active ? Palette.ac : Palette.mu;
+        }
+
+        if !root.compact: Text {
+            text: root.label;
+            color: root.active ? Palette.tx : Palette.mu;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+
+        if !root.compact && root.badge > 0: VerticalLayout {
+            alignment: center;
+
+            Rectangle {
+                height: 16px;
+                border-radius: 8px;
+                background: Palette.bad;
+
+                HorizontalLayout {
+                    padding-left: 6px;
+                    padding-right: 6px;
+
+                    Text {
+                        text: root.badge;
+                        color: Palette.on;
+                        font-size: 11px;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Botón «Reiniciar como admin.», con el escudo. En modo estrecho, solo el icono.
+component AdminButton {
+    in property <bool> compact;
+    in property <bool> enabled;
+    callback clicked();
+    opacity: root.enabled ? 1 : 0.4;
+    accessible-role: button;
+    accessible-label: "Reiniciar como administrador";
+    accessible-enabled: root.enabled;
+    accessible-action-default => { root.clicked(); }
+
+    Rectangle {
+        border-radius: 8px;
+        border-width: 1px;
+        border-color: Palette.line2;
+        background: touch.has-hover && root.enabled ? Palette.line : Palette.s2;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+
+    HorizontalLayout {
+        padding: 8px;
+        padding-left: root.compact ? 8px : 14px;
+        padding-right: root.compact ? 8px : 14px;
+        spacing: 8px;
+
+        Icon {
+            name: "shield";
+            color: Palette.tx;
+        }
+
+        if !root.compact: Text {
+            text: "Reiniciar como admin.";
+            color: Palette.tx;
+            font-size: Type.label;
+            font-weight: 500;
+            vertical-alignment: center;
+        }
+    }
+}
+
+export component AppWindow inherits Window {
+    in property <bool> admin;
+    // Mientras se limpia, no se cambia de sección.
+    in property <bool> locked;
+    // 0 Resumen, 1 Limpiar, 2 Analizar, 3 Programas, 4 Procesos, 5 Seguridad.
+    in-out property <int> section;
+    property <bool> compact: root.width < 1000px;
+
+    title: root.admin ? "WinCleaner (administrador)" : "WinCleaner";
+    preferred-width: 1100px;
+    preferred-height: 720px;
+    min-width: 880px;
+    min-height: 600px;
+    background: Palette.bg;
+    default-font-family: Type.family;
+    default-font-size: Type.body;
+
+    // Sin layout alrededor: así el ancho de la ventana no depende de `compact`.
+    sidebar := Rectangle {
+        x: 0;
+        y: 0;
+        width: root.compact ? 60px : 216px;
+        height: root.height;
+        background: Palette.s1;
+
+        Rectangle {
+            x: parent.width - 1px;
+            width: 1px;
+            background: Palette.line;
+        }
+
+        VerticalLayout {
+            padding-top: 18px;
+            padding-bottom: 18px;
+            padding-left: root.compact ? 8px : 12px;
+            padding-right: root.compact ? 9px : 13px;
+            spacing: 2px;
+
+            HorizontalLayout {
+                padding-top: 2px;
+                padding-bottom: 20px;
+                padding-left: root.compact ? 0 : 10px;
+                spacing: 10px;
+                alignment: root.compact ? center : start;
+
+                Rectangle {
+                    width: 24px;
+                    height: 24px;
+                    border-radius: 7px;
+                    background: Palette.ac;
+
+                    Icon {
+                        name: "broom";
+                        size: 15px;
+                        stroke-width: 2.2px;
+                        color: Palette.on;
+                    }
+                }
+
+                if !root.compact: Text {
+                    text: "WinCleaner";
+                    color: Palette.tx;
+                    font-size: 15px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+            }
+
+            for item[i] in [
+                { icon: "home", label: "Resumen" },
+                { icon: "broom", label: "Limpiar" },
+                { icon: "chart", label: "Analizar" },
+                { icon: "apps", label: "Programas" },
+                { icon: "pulse", label: "Procesos" },
+                { icon: "shield", label: "Seguridad" },
+            ]: NavItem {
+                icon: item.icon;
+                label: item.label;
+                active: root.section == i;
+                compact: root.compact;
+                enabled: !root.locked;
+                badge: i == 5 ? Nav.security-badge : 0;
+                clicked => { root.section = i; }
+            }
+
+            Rectangle { vertical-stretch: 1; }
+
+            Rectangle {
+                height: 1px;
+                background: Palette.line;
+            }
+
+            VerticalLayout {
+                padding-top: 14px;
+                padding-left: root.compact ? 0 : 10px;
+                padding-right: root.compact ? 0 : 10px;
+                padding-bottom: 2px;
+                spacing: 8px;
+                vertical-stretch: 0;
+
+                if root.admin: HorizontalLayout {
+                    alignment: root.compact ? center : start;
+
+                    Rectangle {
+                        border-radius: self.height / 2;
+                        border-width: 1px;
+                        border-color: Palette.ac.with-alpha(0.4);
+                        accessible-role: text;
+                        accessible-label: "Administrador";
+
+                        HorizontalLayout {
+                            padding-top: 2px;
+                            padding-bottom: 2px;
+                            padding-left: 8px;
+                            padding-right: 8px;
+                            spacing: 4px;
+
+                            Icon {
+                                name: "shieldok";
+                                size: 12px;
+                                color: Palette.ac;
+                            }
+
+                            if !root.compact: Text {
+                                text: "Administrador";
+                                color: Palette.ac;
+                                font-size: 11.5px;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+
+                if !root.admin && !root.compact: Text {
+                    text: "Sin permisos de administrador";
+                    color: Palette.fa;
+                    font-size: Type.label;
+                    wrap: word-wrap;
+                }
+
+                if !root.admin: HorizontalLayout {
+                    alignment: root.compact ? center : start;
+
+                    AdminButton {
+                        compact: root.compact;
+                        enabled: !root.locked;
+                        clicked => { Nav.relaunch-admin(); }
+                    }
+                }
+            }
+        }
+    }
+
+    // Zona principal: las páginas llegan en las tareas siguientes.
+    Rectangle {
+        x: sidebar.width;
+        y: 0;
+        width: root.width - sidebar.width;
+        height: root.height;
+        background: Palette.bg;
+    }
+}

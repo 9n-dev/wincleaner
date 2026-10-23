@@ -2,12 +2,20 @@
 name = "wincleaner"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.92"
+
+[dependencies]
+slint = { version = "=1.18.1", default-features = false, features = ["std", "compat-1-2", "renderer-software", "software-renderer-systemfonts", "software-renderer-path"] }
 
 [target.'cfg(windows)'.dependencies]
-native-windows-gui = { version = "1.0", default-features = false, features = ["tabs", "list-view", "progress-bar", "notice", "combobox", "status-bar", "high-dpi"] }
-winapi = { version = "0.3", features = ["shellapi", "shlobj", "knownfolders", "combaseapi", "objbase", "fileapi", "minwinbase", "winbase", "winnt", "winuser", "commctrl", "shtypes", "winerror"] }
+slint = { version = "=1.18.1", default-features = false, features = ["backend-winit", "accessibility"] }
+winapi = { version = "0.3", features = ["shellapi", "shlobj", "knownfolders", "combaseapi", "objbase", "fileapi", "minwinbase", "winbase", "winnt", "winuser", "shtypes", "winerror"] }
+
+[dev-dependencies]
+png = "0.18"
 
 [build-dependencies]
+slint-build = "=1.18.1"
 embed-resource = "3.0"
 
 [profile.release]

@@ -3,6 +3,7 @@
 #[cfg(windows)]
 mod gui;
 #[cfg(windows)]
+#[expect(dead_code, reason = "las secciones que las usan vuelven en las Tasks 3–4")]
 mod win;
 
 #[cfg(not(windows))]
