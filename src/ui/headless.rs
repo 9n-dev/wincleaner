@@ -88,4 +88,39 @@ mod tests {
         assert!(!rows.row_data(1).unwrap().checked);
         assert!(rows.row_data(0).unwrap().checked);
     }
+
+    /// Esperando al desinstalador, ningún clic sobre la lista lanza otro.
+    #[test]
+    fn esperando_no_se_desinstala_otra_vez() {
+        use crate::ui::{ProgramRow, ProgramsData};
+        use slint::platform::PointerEventButton;
+        use slint::{LogicalPosition, VecModel};
+        use std::cell::Cell;
+
+        init();
+        let app = AppWindow::new().unwrap();
+        app.set_section(3);
+        let data = app.global::<ProgramsData>();
+        let row = ProgramRow { name: "Zoom".into(), size: "412 MB".into(), ..Default::default() };
+        data.set_rows(Rc::new(VecModel::from(vec![row.clone(), row])).into());
+        data.set_loading(false);
+        let calls = Rc::new(Cell::new(0));
+        let c = calls.clone();
+        data.on_uninstall(move |_| c.set(c.get() + 1));
+        // Clics por toda la columna de «Desinstalar», con la primera fila elegida.
+        let barrido = |phase| {
+            data.set_phase(phase);
+            data.set_selected(0);
+            calls.set(0);
+            render(app.window(), 1100, 720);
+            for y in (0..720).step_by(4) {
+                let (position, button) = (LogicalPosition::new(1000.0, y as f32), PointerEventButton::Left);
+                app.window().dispatch_event(WindowEvent::PointerPressed { position, button });
+                app.window().dispatch_event(WindowEvent::PointerReleased { position, button });
+            }
+            calls.get()
+        };
+        assert!(barrido(0) > 0, "sin esperar, el botón responde");
+        assert_eq!(barrido(1), 0);
+    }
 }

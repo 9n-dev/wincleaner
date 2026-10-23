@@ -146,6 +146,7 @@ component ProgramItem {
                 Button {
                     text: "Desinstalar";
                     icon: root.item.needs-admin ? "shield" : "";
+                    enabled: !root.locked;
                     clicked => { root.uninstall(); }
                 }
             }
@@ -247,7 +248,6 @@ export component ProgramsPage inherits Rectangle {
                 placeholder: "Buscar programa…";
                 text <=> ProgramsData.query;
                 edited => {
-                    ProgramsData.selected = -1;
                     ProgramsData.view-changed();
                 }
             }
@@ -255,7 +255,6 @@ export component ProgramsPage inherits Rectangle {
                 items: ["Tamaño", "Nombre", "Fecha"];
                 current <=> ProgramsData.sort;
                 selected => {
-                    ProgramsData.selected = -1;
                     ProgramsData.view-changed();
                 }
             }
@@ -312,11 +311,13 @@ export component ProgramsPage inherits Rectangle {
         if ProgramsData.rows.length == 0: EmptyState {
             preferred-height: 100000px;
             min-height: 160px;
-            icon: ProgramsData.query != "" ? "search" : "apps";
-            title: ProgramsData.query != "" ? "Ningún programa coincide con «" + ProgramsData.query + "»"
-                : ProgramsData.loading ? "Leyendo los programas instalados…" : "No hay programas que mostrar";
-            text: ProgramsData.query != "" ? "Revisa cómo está escrito. Las apps de Microsoft Store no salen en esta lista."
-                : ProgramsData.loading ? "" : "Las apps de Microsoft Store no salen en esta lista.";
+            icon: !ProgramsData.loading && ProgramsData.query != "" ? "search" : "apps";
+            title: ProgramsData.loading ? "Leyendo los programas instalados…"
+                : ProgramsData.query != "" ? "Ningún programa coincide con «" + ProgramsData.query + "»"
+                : "No hay programas que mostrar";
+            text: ProgramsData.loading ? ""
+                : ProgramsData.query != "" ? "Revisa cómo está escrito. Las apps de Microsoft Store no salen en esta lista."
+                : "Las apps de Microsoft Store no salen en esta lista.";
         }
     }
 }
