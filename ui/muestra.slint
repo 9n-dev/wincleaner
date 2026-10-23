@@ -4,6 +4,8 @@ import { Button, ButtonKind, Card, Pill, Note, Check, Switch, Seg, SearchBox, Ba
 export { Modal }
 
 export component Muestra inherits Window {
+    // Para la prueba del modal: se llama si se activa un botón de detrás.
+    callback fondo();
     width: 1100px;
     height: 720px;
     background: Palette.bg;
@@ -16,11 +18,11 @@ export component Muestra inherits Window {
 
         HorizontalLayout {
             spacing: 12px;
-            Button { text: "Limpiar"; icon: "broom"; kind: ButtonKind.primary; }
+            Button { text: "Limpiar"; icon: "broom"; kind: ButtonKind.primary; clicked => { root.fondo(); } }
             Button { text: "Analizar"; icon: "chart"; }
             Button { text: "Terminar"; icon: "stop"; kind: ButtonKind.danger; }
             Button { text: "Desactivado"; enabled: false; }
-            Button { text: "Con foco"; init => { self.focus(); } }
+            Button { text: "Con foco"; init => { self.focus(); } clicked => { root.fondo(); } }
             Rectangle { }
         }
         HorizontalLayout {

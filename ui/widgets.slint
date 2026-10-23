@@ -521,6 +521,11 @@ export component ConfirmModal inherits Rectangle {
                 Modal.open = false;
                 return accept;
             }
+            // Trampa de foco: Tab y Mays+Tab dan la vuelta entre los dos botones del modal.
+            if (e.text == Key.Tab || e.text == Key.Backtab) {
+                if (cancel-btn.has-focus) { confirm-btn.focus(); } else { cancel-btn.focus(); }
+                return accept;
+            }
             return reject;
         }
 
@@ -609,7 +614,7 @@ export component ConfirmModal inherits Rectangle {
                             Modal.open = false;
                         }
                     }
-                    Button {
+                    confirm-btn := Button {
                         text: Modal.confirm-text;
                         kind: Modal.danger ? ButtonKind.danger : ButtonKind.primary;
                         enter-activates: false;
