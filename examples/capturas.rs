@@ -252,6 +252,49 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     modal.set_open(false);
+
+    // Procesos, con los datos de `PROCS` de las maquetas: lista, confirmar y error.
+    use wincleaner::ui::{ProcRow, ProcsData};
+    let procs = [
+        (0x8fb0c4, "C", "Google Chrome", "Google LLC", 14, "6 %", "1,8 GB", 0),
+        (0xc4a7b4, "D", "Discord", "Discord Inc.", 6, "1 %", "612 MB", 0),
+        (0x9ba6ad, "E", "Explorador de Windows", "Microsoft Windows", 1, "0 %", "148 MB", 1),
+        (0xa9c2b8, "S", "Spotify", "Spotify AB", 5, "0 %", "402 MB", 0),
+        (0x9ba6ad, "M", "Antimalware Service Executable", "Microsoft Windows", 1, "2 %", "220 MB", 1),
+        (0xd6b38a, "u", "updater.exe", "Sin firma · se ejecuta desde Temp", 1, "0 %", "18 MB", 2),
+        (0x8fb0c4, "S", "Steam", "Valve Corporation", 3, "0 %", "260 MB", 0),
+    ]
+    .map(|(c, l, n, s, k, cpu, mem, f): (u32, _, _, _, _, _, _, _)| ProcRow {
+        name: n.into(),
+        count: k,
+        sub: s.into(),
+        cpu: cpu.into(),
+        mem: mem.into(),
+        icon: Default::default(),
+        letter: l.into(),
+        tint: slint::Color::from_rgb_u8((c >> 16) as u8, (c >> 8) as u8, c as u8),
+        blocked: f == 1,
+        review: f == 2,
+    });
+    let data = app.global::<ProcsData>();
+    data.set_subtitle("128 procesos · CPU 14 % · Memoria 5,4 GB de 16 GB".into());
+    data.set_rows(model(procs.to_vec()));
+    data.set_denied_name("AsusCertService".into());
+    modal.set_title("¿Terminar Discord?".into());
+    modal.set_text("Se cerrarán sus 6 procesos. Lo que no hayas guardado en Discord se perderá.".into());
+    modal.set_confirm_text("Terminar".into());
+    app.set_section(4);
+    for (nombre, selected, denied) in
+        [("procesos", 1, false), ("procesos-confirmar", 1, false), ("procesos-error", -1, true)]
+    {
+        data.set_selected(selected);
+        data.set_denied(denied);
+        modal.set_open(nombre == "procesos-confirmar");
+        for (suffix, w, h) in [("", 1100, 720), ("-min", 880, 600)] {
+            guarda(&format!("wcv2-{nombre}{suffix}"), &headless::render(app.window(), w, h), w, h)?;
+        }
+    }
+    modal.set_open(false);
     app.set_section(0);
 
     // Todos los componentes, con el modal abierto encima.

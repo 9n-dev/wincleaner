@@ -55,7 +55,7 @@ thread_local! {
 const TINTS: [u32; 6] = [0x8fb0c4, 0xd68a8a, 0x8fc2c0, 0xc4a7b4, 0xa9c2b8, 0xd6b38a];
 
 /// Color estable para un nombre: no cambia entre ejecuciones ni versiones de Rust.
-fn tint(name: &str) -> Color {
+pub(super) fn tint(name: &str) -> Color {
     let h = name.bytes().fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(u32::from(b)));
     let c = TINTS[h as usize % TINTS.len()];
     Color::from_rgb_u8((c >> 16) as u8, (c >> 8) as u8, c as u8)

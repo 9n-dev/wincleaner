@@ -11,29 +11,16 @@ use winapi::shared::winerror::{
     ERROR_ACCESS_DENIED, ERROR_CANCELLED, ERROR_ELEVATION_REQUIRED, ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND,
     WAIT_TIMEOUT,
 };
-use winapi::um::handleapi::CloseHandle;
 use winapi::um::jobapi2::{AssignProcessToJobObject, CreateJobObjectW, QueryInformationJobObject};
 use winapi::um::processthreadsapi::{CreateProcessW, PROCESS_INFORMATION, ResumeThread, STARTUPINFOW, TerminateProcess};
 use winapi::um::shellapi::{SEE_MASK_FLAG_NO_UI, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, ShellExecuteExW};
 use winapi::um::synchapi::WaitForSingleObject;
 use winapi::um::winbase::CREATE_SUSPENDED;
-use winapi::um::winnt::{HANDLE, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JobObjectBasicAccountingInformation};
+use winapi::um::winnt::{JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JobObjectBasicAccountingInformation};
 use winapi::um::winuser::SW_SHOWNORMAL;
 use wincleaner::programs::UninstallCmd;
 
-use super::wide;
-
-/// Un HANDLE propio (o nulo); se cierra al soltarlo.
-struct Handle(HANDLE);
-
-impl Drop for Handle {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            // SAFETY: lo abrió Windows para nosotros y solo se cierra aquí.
-            unsafe { CloseHandle(self.0) };
-        }
-    }
-}
+use super::{Handle, wide};
 
 /// El desinstalador lanzado. Con job se siguen también los procesos que lance él (NSIS se
 /// copia a Temp y sigue desde ahí); con `runas` no hay job. Solo cambia la ayuda de la

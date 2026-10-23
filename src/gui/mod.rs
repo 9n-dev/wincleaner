@@ -2,6 +2,7 @@
 
 mod analyze;
 mod clean;
+mod procs;
 mod programs;
 mod summary;
 
@@ -36,5 +37,6 @@ pub fn run() {
     let _clean = clean::Clean::new(&app);
     analyze::Analyze::new(&app);
     programs::Programs::new(&app);
+    procs::Procs::new(&app);
     let _ = app.run();
 }

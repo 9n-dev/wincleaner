@@ -1,7 +1,9 @@
 //! Capa fina sobre Win32: entorno, permisos, papelera, unidades y Explorador.
 
 pub mod icon;
+pub mod proc;
 pub mod reg;
+pub mod trust;
 pub mod uninstall;
 
 use std::ffi::{OsStr, OsString};
@@ -32,7 +34,9 @@ use winapi::um::shellapi::{
     SHERB_NOPROGRESSUI, SHERB_NOSOUND,
 };
 use winapi::um::shlobj::SHGetKnownFolderPath;
+use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
 use winapi::um::winbase::DRIVE_FIXED;
+use winapi::um::winnt::HANDLE;
 use winapi::um::winuser::SW_SHOWNORMAL;
 
 use wincleaner::categories::Env;
@@ -41,6 +45,19 @@ use wincleaner::categories::Env;
 #[link(name = "shell32")]
 unsafe extern "system" {
     fn IsUserAnAdmin() -> BOOL;
+}
+
+/// Un HANDLE propio (o nulo); se cierra al soltarlo.
+struct Handle(HANDLE);
+
+impl Drop for Handle {
+    fn drop(&mut self) {
+        // INVALID_HANDLE_VALUE (-1) es lo que devuelven CreateFileW y CreateToolhelp32Snapshot al fallar.
+        if !self.0.is_null() && self.0 != INVALID_HANDLE_VALUE {
+            // SAFETY: lo abrió Windows para nosotros y solo se cierra aquí.
+            unsafe { CloseHandle(self.0) };
+        }
+    }
 }
 
 pub struct Drive {
@@ -183,6 +200,11 @@ pub fn open_in_explorer(path: &Path) {
         .spawn();
 }
 
+/// `C:\\Windows`, para saber qué procesos son de Windows.
+pub fn windows_dir() -> Option<String> {
+    known_folder(&FOLDERID_Windows).map(|p| p.to_string_lossy().into_owned())
+}
+
 /// `C:\\Windows\\System32`, para `programs::uninstall_command`.
 pub fn system32() -> Option<String> {
     known_folder(&FOLDERID_System).map(|p| p.to_string_lossy().into_owned())
@@ -220,7 +242,7 @@ fn known_folder(id: &GUID) -> Option<PathBuf> {
     out
 }
 
-fn long_path(p: &Path) -> PathBuf {
+pub(crate) fn long_path(p: &Path) -> PathBuf {
     let w = wide(p);
     // SAFETY: búfer nulo y tamaño 0: devuelve el tamaño necesario con el nulo.
     let n = unsafe { GetLongPathNameW(w.as_ptr(), null_mut(), 0) };

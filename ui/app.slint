@@ -3,9 +3,10 @@ import { ConfirmModal, Modal, ModalLine } from "widgets.slint";
 import { SummaryPage, SummaryData, DriveRow } from "pages/summary.slint";
 import { AnalyzePage, AnalyzeData, DirRow } from "pages/analyze.slint";
 import { ProgramsPage, ProgramsData, ProgramRow } from "pages/programs.slint";
+import { ProcsPage, ProcsData, ProcRow } from "pages/procs.slint";
 import { CleanPage, CleanData, CleanPhase, CatState, CategoryRow, ReportRow } from "pages/clean.slint";
 
-export { Modal, ModalLine, CleanData, CleanPhase, CatState, CategoryRow, ReportRow, AnalyzeData, DirRow, SummaryData, DriveRow, ProgramsData, ProgramRow }
+export { Modal, ModalLine, CleanData, CleanPhase, CatState, CategoryRow, ReportRow, AnalyzeData, DirRow, SummaryData, DriveRow, ProgramsData, ProgramRow, ProcsData, ProcRow }
 
 // Estado de la barra lateral que rellena Rust.
 export global Nav {
@@ -137,8 +138,10 @@ export component AppWindow inherits Window {
     property <bool> compact: root.width < 1000px;
 
     // Al volver al Resumen se vuelven a leer las unidades.
+    // Procesos solo se refresca mientras se ve.
     changed section => {
         if (root.section == 0) { SummaryData.refresh(); }
+        ProcsData.visible(root.section == 4);
     }
 
     title: root.admin ? "WinCleaner (administrador)" : "WinCleaner";
@@ -316,6 +319,12 @@ export component AppWindow inherits Window {
             width: parent.width;
             height: parent.height;
             compact: root.compact;
+        }
+        if root.section == 4: ProcsPage {
+            width: parent.width;
+            height: parent.height;
+            compact: root.compact;
+            relaunch-admin => { Nav.relaunch-admin(); }
         }
     }
 

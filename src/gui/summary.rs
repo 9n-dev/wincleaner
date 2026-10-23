@@ -50,6 +50,12 @@ pub fn set_programs(app: &AppWindow, title: &str, biggest: Option<(&str, u64)>) 
     d.set_programs_text(text.unwrap_or_default().into());
 }
 
+/// Tarjeta de Procesos: «128 procesos · 5,4 GB». La segunda línea (programas de arranque)
+/// la rellena Arranque.
+pub fn set_procs(app: &AppWindow, title: &str) {
+    app.global::<SummaryData>().set_procs_title(title.into());
+}
+
 /// Conecta la sección y lee las unidades por primera vez.
 pub fn init(app: &AppWindow) {
     let d = app.global::<SummaryData>();

@@ -1,0 +1,278 @@
+//! Firma Authenticode de un ejecutable, propia o por catálogo de Windows. Sin red: no se
+//! comprueba la revocación y solo se usa lo que ya está en la caché de URL.
+
+use std::collections::HashMap;
+use std::mem::zeroed;
+use std::ptr::{null, null_mut};
+use std::sync::Mutex;
+
+use winapi::shared::guiddef::GUID;
+use winapi::shared::minwindef::{BOOL, BYTE, DWORD, FILETIME};
+use winapi::shared::winerror::{TRUST_E_NOSIGNATURE, TRUST_E_PROVIDER_UNKNOWN, TRUST_E_SUBJECT_FORM_UNKNOWN};
+use winapi::um::fileapi::{CreateFileW, OPEN_EXISTING};
+use winapi::um::handleapi::INVALID_HANDLE_VALUE;
+use winapi::um::softpub::WINTRUST_ACTION_GENERIC_VERIFY_V2;
+use winapi::um::wincrypt::{CERT_NAME_SIMPLE_DISPLAY_TYPE, CertGetNameStringW, PCCERT_CONTEXT};
+use winapi::um::winnt::{FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, GENERIC_READ, HANDLE, LPCWSTR};
+use winapi::um::wintrust::{
+    WINTRUST_DATA, WINTRUST_FILE_INFO, WTD_CACHE_ONLY_URL_RETRIEVAL, WTD_CHOICE_CATALOG, WTD_CHOICE_FILE,
+    WTD_REVOKE_NONE, WTD_STATEACTION_CLOSE, WTD_STATEACTION_VERIFY, WTD_UI_NONE, WinVerifyTrust,
+};
+
+use super::{Handle, wide};
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Signature {
+    /// Firma válida; el nombre del firmante (puede ir vacío).
+    Signed(String),
+    Unsigned,
+    Invalid,
+}
+
+type HCatAdmin = HANDLE;
+type HCatInfo = HANDLE;
+
+/// `WINTRUST_CATALOG_INFO`, que winapi 0.3.9 no trae.
+#[repr(C)]
+struct CatalogInfo {
+    cb_struct: DWORD,
+    catalog_version: DWORD,
+    catalog_file_path: LPCWSTR,
+    member_tag: LPCWSTR,
+    member_file_path: LPCWSTR,
+    member_file: HANDLE,
+    calculated_file_hash: *mut BYTE,
+    cb_calculated_file_hash: DWORD,
+    catalog_context: *const std::ffi::c_void,
+    cat_admin: HCatAdmin,
+}
+
+/// `CATALOG_INFO`.
+#[repr(C)]
+struct CatalogFile {
+    cb_struct: DWORD,
+    file: [u16; 260],
+}
+
+/// Principio de `CRYPT_PROVIDER_SGNR`: solo se leen estos campos, a través del puntero que da Windows.
+#[repr(C)]
+struct ProvSigner {
+    cb_struct: DWORD,
+    verify_as_of: FILETIME,
+    cs_cert_chain: DWORD,
+    cert_chain: *const ProvCert,
+}
+
+/// Principio de `CRYPT_PROVIDER_CERT`.
+#[repr(C)]
+struct ProvCert {
+    cb_struct: DWORD,
+    cert: PCCERT_CONTEXT,
+}
+
+// winapi 0.3.9 no las declara. La feature `wintrust` de winapi ya enlaza la biblioteca que las
+// exporta (la de mingw no trae las versiones 2).
+unsafe extern "system" {
+    fn CryptCATAdminAcquireContext2(
+        admin: *mut HCatAdmin,
+        subsystem: *const GUID,
+        hash_algorithm: LPCWSTR,
+        strong_hash_policy: *const std::ffi::c_void,
+        flags: DWORD,
+    ) -> BOOL;
+    fn CryptCATAdminReleaseContext(admin: HCatAdmin, flags: DWORD) -> BOOL;
+    fn CryptCATAdminCalcHashFromFileHandle2(
+        admin: HCatAdmin,
+        file: HANDLE,
+        cb_hash: *mut DWORD,
+        hash: *mut BYTE,
+        flags: DWORD,
+    ) -> BOOL;
+    fn CryptCATAdminEnumCatalogFromHash(
+        admin: HCatAdmin,
+        hash: *mut BYTE,
+        cb_hash: DWORD,
+        flags: DWORD,
+        prev: *mut HCatInfo,
+    ) -> HCatInfo;
+    fn CryptCATCatalogInfoFromContext(info: HCatInfo, out: *mut CatalogFile, flags: DWORD) -> BOOL;
+    fn CryptCATAdminReleaseCatalogContext(admin: HCatAdmin, info: HCatInfo, flags: DWORD) -> BOOL;
+    fn WTHelperProvDataFromStateData(state: HANDLE) -> *mut std::ffi::c_void;
+    fn WTHelperGetProvSignerFromChain(
+        data: *mut std::ffi::c_void,
+        signer: DWORD,
+        counter_signer: BOOL,
+        counter_idx: DWORD,
+    ) -> *const ProvSigner;
+}
+
+/// Contexto de catálogos; se suelta al salir.
+struct CatAdmin(HCatAdmin);
+
+impl Drop for CatAdmin {
+    fn drop(&mut self) {
+        // SAFETY: lo creó CryptCATAdminAcquireContext2 y solo se suelta aquí.
+        unsafe { CryptCATAdminReleaseContext(self.0, 0) };
+    }
+}
+
+/// Un catálogo encontrado; se suelta (antes que su contexto) al salir.
+struct CatInfo<'a>(&'a CatAdmin, HCatInfo);
+
+impl Drop for CatInfo<'_> {
+    fn drop(&mut self) {
+        // SAFETY: lo dio CryptCATAdminEnumCatalogFromHash con este contexto.
+        unsafe { CryptCATAdminReleaseCatalogContext(self.0.0, self.1, 0) };
+    }
+}
+
+/// Llama a WinVerifyTrust con `data` ya rellenado (falta la parte común), lee el firmante si
+/// la firma es válida y siempre cierra el estado.
+fn verify(mut data: WINTRUST_DATA) -> (i32, String) {
+    data.cbStruct = size_of::<WINTRUST_DATA>() as DWORD;
+    data.dwUIChoice = WTD_UI_NONE;
+    data.fdwRevocationChecks = WTD_REVOKE_NONE;
+    data.dwStateAction = WTD_STATEACTION_VERIFY;
+    data.dwProvFlags = WTD_CACHE_ONLY_URL_RETRIEVAL;
+    let mut action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+    // SAFETY: `data` es un WINTRUST_DATA completo cuyos punteros viven durante la llamada.
+    let r = unsafe { WinVerifyTrust(INVALID_HANDLE_VALUE.cast(), &mut action, (&raw mut data).cast()) };
+    let signer = if r == 0 { signer(data.hWVTStateData) } else { String::new() };
+    data.dwStateAction = WTD_STATEACTION_CLOSE;
+    // SAFETY: cierra el estado que abrió la llamada anterior (también si falló).
+    unsafe { WinVerifyTrust(INVALID_HANDLE_VALUE.cast(), &mut action, (&raw mut data).cast()) };
+    (r, signer)
+}
+
+/// Nombre del primer firmante del estado de WinVerifyTrust, o vacío.
+fn signer(state: HANDLE) -> String {
+    // SAFETY: `state` es el estado vivo de un WinVerifyTrust con éxito.
+    let data = unsafe { WTHelperProvDataFromStateData(state) };
+    if data.is_null() {
+        return String::new();
+    }
+    // SAFETY: `data` es de Windows y sigue vivo hasta el CLOSE.
+    let sgnr = unsafe { WTHelperGetProvSignerFromChain(data, 0, 0, 0) };
+    // SAFETY: si no es nulo, apunta a un CRYPT_PROVIDER_SGNR, que empieza como `ProvSigner`.
+    let Some(sgnr) = (unsafe { sgnr.as_ref() }) else { return String::new() };
+    if sgnr.cs_cert_chain == 0 || sgnr.cert_chain.is_null() {
+        return String::new();
+    }
+    // SAFETY: la cadena tiene al menos un certificado: el del firmante.
+    let cert = unsafe { (*sgnr.cert_chain).cert };
+    if cert.is_null() {
+        return String::new();
+    }
+    let mut buf = [0u16; 256];
+    // SAFETY: certificado válido; `buf` mide lo que se le dice. Devuelve los caracteres con el nulo.
+    let n = unsafe {
+        CertGetNameStringW(cert, CERT_NAME_SIMPLE_DISPLAY_TYPE, 0, null_mut(), buf.as_mut_ptr(), buf.len() as DWORD)
+    };
+    let n = (n as usize).saturating_sub(1).min(buf.len());
+    String::from_utf16_lossy(&buf[..n])
+}
+
+fn from_result(r: i32, signer: String) -> Signature {
+    if r == 0 { Signature::Signed(signer) } else { Signature::Invalid }
+}
+
+/// Comprueba la firma de `path`: primero la del propio archivo y, si no tiene, la de los
+/// catálogos de Windows (así van firmados casi todos sus ejecutables).
+pub fn check(path: &str) -> Signature {
+    let w = wide(path);
+    // SAFETY: estructura C de enteros y punteros: a ceros es válida.
+    let mut file: WINTRUST_FILE_INFO = unsafe { zeroed() };
+    file.cbStruct = size_of::<WINTRUST_FILE_INFO>() as DWORD;
+    file.pcwszFilePath = w.as_ptr();
+    // SAFETY: igual que `file`.
+    let mut data: WINTRUST_DATA = unsafe { zeroed() };
+    data.dwUnionChoice = WTD_CHOICE_FILE;
+    // SAFETY: la unión es un puntero; `file` vive durante `verify`.
+    unsafe { *data.u.pFile_mut() = &mut file };
+    let (r, signer) = verify(data);
+    if ![TRUST_E_NOSIGNATURE, TRUST_E_SUBJECT_FORM_UNKNOWN, TRUST_E_PROVIDER_UNKNOWN].contains(&r) {
+        return from_result(r, signer);
+    }
+    catalog(&w).unwrap_or(Signature::Unsigned)
+}
+
+/// Firma por catálogo; `None` si no está en ninguno (o no se puede saber).
+fn catalog(w: &[u16]) -> Option<Signature> {
+    // SAFETY: ruta terminada en nulo; solo lectura, compartida con todo.
+    let file = Handle(unsafe {
+        CreateFileW(
+            w.as_ptr(),
+            GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            null_mut(),
+            OPEN_EXISTING,
+            0,
+            null_mut(),
+        )
+    });
+    if file.0 == INVALID_HANDLE_VALUE {
+        return None;
+    }
+    let sha256 = wide("SHA256");
+    let mut admin: HCatAdmin = null_mut();
+    // SAFETY: subsistema y política nulos (los de por defecto); `admin` es nuestro.
+    if unsafe { CryptCATAdminAcquireContext2(&mut admin, null(), sha256.as_ptr(), null(), 0) } == 0 {
+        return None;
+    }
+    let admin = CatAdmin(admin);
+    let mut hash = [0u8; 64];
+    let mut n = hash.len() as DWORD;
+    // SAFETY: `hash` mide `n` bytes; `file` está abierto para leer.
+    if unsafe { CryptCATAdminCalcHashFromFileHandle2(admin.0, file.0, &mut n, hash.as_mut_ptr(), 0) } == 0 {
+        return None;
+    }
+    let n = (n as usize).min(hash.len());
+    // SAFETY: hash de `n` bytes; sin catálogo anterior.
+    let info = unsafe { CryptCATAdminEnumCatalogFromHash(admin.0, hash.as_mut_ptr(), n as DWORD, 0, null_mut()) };
+    if info.is_null() {
+        return None;
+    }
+    let info = CatInfo(&admin, info);
+    let mut cat = CatalogFile { cb_struct: size_of::<CatalogFile>() as DWORD, file: [0; 260] };
+    // SAFETY: `cat` lleva su tamaño.
+    if unsafe { CryptCATCatalogInfoFromContext(info.1, &mut cat, 0) } == 0 {
+        return None;
+    }
+    // La etiqueta del miembro es el hash en hexadecimal.
+    let tag = wide(hash[..n].iter().map(|b| format!("{b:02X}")).collect::<String>());
+    let mut ci = CatalogInfo {
+        cb_struct: size_of::<CatalogInfo>() as DWORD,
+        catalog_version: 0,
+        catalog_file_path: cat.file.as_ptr(),
+        member_tag: tag.as_ptr(),
+        member_file_path: w.as_ptr(),
+        member_file: file.0,
+        calculated_file_hash: hash.as_mut_ptr(),
+        cb_calculated_file_hash: n as DWORD,
+        catalog_context: null(),
+        cat_admin: admin.0,
+    };
+    // SAFETY: igual que en `check`.
+    let mut data: WINTRUST_DATA = unsafe { zeroed() };
+    data.dwUnionChoice = WTD_CHOICE_CATALOG;
+    // SAFETY: la unión es un puntero (aquí a WINTRUST_CATALOG_INFO); `ci` vive durante `verify`.
+    unsafe { *data.u.pFile_mut() = (&raw mut ci).cast() };
+    let (r, signer) = verify(data);
+    Some(from_result(r, signer))
+}
+
+static CACHE: Mutex<Option<HashMap<String, Signature>>> = Mutex::new(None);
+
+/// `check` con caché por ruta en minúsculas: un ejecutable no cambia de firma mientras corre.
+pub fn check_cached(path: &str) -> Signature {
+    // ponytail: la caché no se vacía; crece con los ejecutables distintos que se ven (pocos cientos).
+    let key = path.to_lowercase();
+    if let Some(s) = CACHE.lock().ok().and_then(|c| c.as_ref()?.get(&key).cloned()) {
+        return s;
+    }
+    let s = check(path);
+    if let Ok(mut c) = CACHE.lock() {
+        c.get_or_insert_with(HashMap::new).insert(key, s.clone());
+    }
+    s
+}

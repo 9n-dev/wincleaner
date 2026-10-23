@@ -1,0 +1,296 @@
+// Sección Procesos: «En ejecución» (agrupados por programa) y «Arrancan con Windows».
+// Todo llega por `ProcsData`.
+import { Palette, Type, Icon } from "../theme.slint";
+import { Button, ButtonKind, Note, Pill, Seg, AppIcon, EmptyState, Tone } from "../widgets.slint";
+import { Head, ListBox } from "clean.slint";
+
+export struct ProcRow {
+    // La descripción del ejecutable («Google Chrome») o, si no tiene, su nombre.
+    name: string,
+    // Procesos del grupo; «(6)» si hay más de uno.
+    count: int,
+    // Firmante, o «Sin firma · se ejecuta desde Temp».
+    sub: string,
+    // «6 %», o «—» en la primera vuelta.
+    cpu: string,
+    // «612 MB»
+    mem: string,
+    // El icono real; si no hay (ancho 0), la baldosa con `letter` sobre `tint`.
+    icon: image,
+    letter: string,
+    tint: color,
+    // De Windows (o sin ruta conocida): sin «Terminar».
+    blocked: bool,
+    // Merece un vistazo: pastilla «Revisar» y el subtítulo en `warn`.
+    review: bool,
+}
+
+export global ProcsData {
+    // «128 procesos · CPU 14 % · Memoria 5,4 GB de 16 GB»
+    in property <string> subtitle;
+    // 0 en ejecución, 1 arrancan con Windows.
+    in-out property <int> tab;
+    in property <[ProcRow]> rows;
+    in-out property <int> selected: -1;
+    // Aviso de error al terminar `denied-name`. Si `error-text` va vacío, es acceso denegado
+    // (con «Reiniciar como admin.»); si no, ese texto.
+    in property <bool> denied;
+    in property <string> denied-name;
+    in property <string> error-text;
+    callback terminate(int);
+    callback open(int);
+    callback dismiss();
+    // Al entrar en la sección (true) y al salir (false): la lista solo se refresca mientras se ve.
+    callback visible(bool);
+}
+
+component HeadText inherits Text {
+    color: Palette.fa;
+    font-size: 11.5px;
+    letter-spacing: 0.6px;
+    horizontal-alignment: right;
+    vertical-alignment: center;
+}
+
+// Columnas: icono, programa, CPU, memoria y acciones.
+component Columns inherits HorizontalLayout {
+    padding-left: 16px;
+    padding-right: 16px;
+    spacing: 14px;
+}
+
+component ProcItem {
+    in property <ProcRow> item;
+    in property <bool> selected;
+    callback select();
+    callback open();
+    callback terminate();
+    height: 61px;
+    accessible-role: list-item;
+    accessible-label: root.item.name + ", " + root.item.mem;
+    accessible-action-default => { root.select(); }
+
+    Rectangle {
+        background: root.selected ? Palette.s2 : touch.has-hover ? Palette.s2.with-alpha(0.5) : transparent;
+    }
+    Rectangle {
+        y: 0;
+        height: 1px;
+        background: Palette.line;
+    }
+    if root.selected: Rectangle {
+        x: 0;
+        width: 3px;
+        background: Palette.ac;
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.select(); }
+    }
+
+    Columns {
+        VerticalLayout {
+            alignment: center;
+            AppIcon {
+                img: root.item.icon;
+                letter: root.item.letter;
+                tint: root.item.tint;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+
+            HorizontalLayout {
+                spacing: 4px;
+                Text {
+                    text: root.item.name;
+                    color: Palette.tx;
+                    font-weight: 500;
+                    overflow: elide;
+                    horizontal-stretch: 0;
+                }
+                if root.item.count > 1: Text {
+                    text: "(" + root.item.count + ")";
+                    color: Palette.fa;
+                    horizontal-stretch: 0;
+                }
+                Rectangle { horizontal-stretch: 1; }
+            }
+            Text {
+                text: root.item.sub;
+                color: root.item.review ? Palette.warn : Palette.fa;
+                font-size: Type.label;
+                overflow: elide;
+            }
+        }
+        Text {
+            width: 60px;
+            text: root.item.cpu;
+            color: Palette.tx;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+        }
+        Text {
+            width: 80px;
+            text: root.item.mem;
+            color: Palette.tx;
+            font-weight: 600;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+        }
+        HorizontalLayout {
+            width: 220px;
+            alignment: end;
+            spacing: 8px;
+
+            if root.selected: VerticalLayout {
+                alignment: center;
+                Button {
+                    text: "";
+                    icon: "folder";
+                    accessible-label: "Abrir ubicación";
+                    clicked => { root.open(); }
+                }
+            }
+            if root.selected && !root.item.blocked: VerticalLayout {
+                alignment: center;
+                Button {
+                    text: "Terminar";
+                    kind: ButtonKind.danger;
+                    clicked => { root.terminate(); }
+                }
+            }
+            if (!root.selected || root.item.blocked) && (root.item.blocked || root.item.review): VerticalLayout {
+                alignment: center;
+                Pill {
+                    kind: root.item.blocked ? Tone.neutral : Tone.warn;
+                    icon: root.item.blocked ? "lock" : "warn";
+                    text: root.item.blocked ? "De Windows" : "Revisar";
+                }
+            }
+        }
+    }
+}
+
+export component ProcsPage inherits Rectangle {
+    in property <bool> compact;
+    // «Reiniciar como admin.» del aviso (lo conecta la ventana con `Nav`).
+    callback relaunch-admin();
+
+    VerticalLayout {
+        padding-top: root.compact ? 20px : 28px;
+        padding-bottom: root.compact ? 20px : 28px;
+        padding-left: root.compact ? 20px : 32px;
+        padding-right: root.compact ? 20px : 32px;
+        spacing: 18px;
+        alignment: start;
+
+        Head {
+            vertical-stretch: 0;
+            title: "Procesos";
+            text: ProcsData.subtitle;
+        }
+
+        if ProcsData.denied: Note {
+            vertical-stretch: 0;
+            kind: Tone.bad;
+            icon: "warn";
+            title: "No se pudo terminar «" + ProcsData.denied-name + "».";
+            text: ProcsData.error-text != "" ? ProcsData.error-text
+                : "Windows ha denegado el acceso. Reinicia WinCleaner como administrador para intentarlo.";
+
+            if ProcsData.error-text == "": Button {
+                text: root.compact ? "" : "Reiniciar como admin.";
+                icon: "shield";
+                accessible-label: "Reiniciar como administrador";
+                clicked => { root.relaunch-admin(); }
+            }
+            Button {
+                text: "";
+                icon: "x";
+                accessible-label: "Cerrar aviso";
+                clicked => { ProcsData.dismiss(); }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 10px;
+            vertical-stretch: 0;
+
+            Seg {
+                items: ["En ejecución", "Arrancan con Windows"];
+                current <=> ProcsData.tab;
+            }
+            Rectangle { horizontal-stretch: 1; }
+            Text {
+                text: "Se actualiza cada 2 s";
+                color: Palette.fa;
+                font-size: Type.label;
+                vertical-alignment: center;
+            }
+        }
+
+        if ProcsData.tab == 0 && ProcsData.rows.length > 0: ListBox {
+            preferred-height: 39px + ProcsData.rows.length * 61px;
+            min-height: 100px;
+
+            Rectangle {
+                height: 39px;
+                background: Palette.bg;
+
+                Columns {
+                    Rectangle { width: 30px; }
+                    HeadText {
+                        text: "PROGRAMA";
+                        horizontal-stretch: 1;
+                        horizontal-alignment: left;
+                    }
+                    HeadText {
+                        width: 60px;
+                        text: "CPU";
+                    }
+                    HeadText {
+                        width: 80px;
+                        text: "MEMORIA";
+                    }
+                    Rectangle { width: 220px; }
+                }
+            }
+            Flickable {
+                vertical-stretch: 1;
+                content-width: self.width;
+                content-height: list.preferred-height;
+
+                list := VerticalLayout {
+                    width: parent.width;
+                    for row[i] in ProcsData.rows: ProcItem {
+                        item: row;
+                        selected: ProcsData.selected == i;
+                        select => { ProcsData.selected = i; }
+                        open => { ProcsData.open(i); }
+                        terminate => { ProcsData.terminate(i); }
+                    }
+                }
+            }
+        }
+
+        if ProcsData.tab == 0 && ProcsData.rows.length == 0: EmptyState {
+            preferred-height: 100000px;
+            min-height: 160px;
+            icon: "pulse";
+            title: "Leyendo los procesos…";
+            text: "";
+        }
+
+        // La lista de arranque llega con su propia tarea.
+        if ProcsData.tab == 1: EmptyState {
+            preferred-height: 100000px;
+            min-height: 160px;
+            icon: "pulse";
+            title: "Programas que arrancan con Windows";
+            text: "";
+        }
+    }
+}
