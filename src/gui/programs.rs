@@ -1,17 +1,21 @@
-//! Sección Programas: la lista de las claves `Uninstall`, con búsqueda, orden e iconos.
-//! El registro y los iconos se leen en hilos; la interfaz no espera a ninguno.
+//! Sección Programas: la lista de las claves `Uninstall`, con búsqueda, orden e iconos, y la
+//! desinstalación con el desinstalador del propio programa. El registro y los iconos se leen
+//! en hilos; la interfaz no espera a ninguno.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::time::Duration;
 
-use slint::{Color, ComponentHandle, Image, Rgba8Pixel, SharedPixelBuffer, VecModel, Weak};
+use slint::{Color, ComponentHandle, Image, Rgba8Pixel, SharedPixelBuffer, Timer, TimerMode, VecModel, Weak};
 use wincleaner::format;
-use wincleaner::programs::{self, Hive, Program, RawEntry, SortKey};
-use wincleaner::ui::{AppWindow, ProgramRow, ProgramsData};
+use wincleaner::programs::{self, Hive, Program, RawEntry, SortKey, WaitState};
+use wincleaner::ui::{AppWindow, Confirm, ProgramRow, ProgramsData, SummaryData, confirm};
 
 use super::summary;
 use crate::win;
+use crate::win::uninstall::{self, Launched, LaunchError};
 
 /// Ruta e índice del icono, en minúsculas.
 type IconKey = (String, i32);
@@ -25,6 +29,21 @@ struct State {
     view: Vec<Program>,
     /// `None`: se intentó y no tiene icono.
     icons: HashMap<IconKey, Option<SharedPixelBuffer<Rgba8Pixel>>>,
+    /// El desinstalador en marcha; solo uno a la vez.
+    waiting: Option<Waiting>,
+    /// Cada segundo, mientras hay `waiting`.
+    timer: Timer,
+    /// La carpeta que abre «Abrir carpeta» en el aviso 2.
+    folder: Option<PathBuf>,
+}
+
+struct Waiting {
+    launched: Launched,
+    hive: Hive,
+    key: String,
+    name: String,
+    size: Option<u64>,
+    user_done: bool,
 }
 
 thread_local! {
@@ -80,7 +99,32 @@ impl Programs {
     pub fn new(app: &AppWindow) -> Programs {
         let c = Programs(app.as_weak());
         let k = c.clone();
-        app.global::<ProgramsData>().on_view_changed(move || k.refresh_view());
+        let data = app.global::<ProgramsData>();
+        data.on_view_changed(move || k.refresh_view());
+        let k = c.clone();
+        data.on_uninstall(move |i| k.ask(i));
+        let k = c.clone();
+        data.on_done_waiting(move || {
+            STATE.with_borrow_mut(|st| {
+                if let Some(w) = &mut st.waiting {
+                    w.user_done = true;
+                }
+            });
+            k.tick();
+        });
+        let k = c.clone();
+        data.on_dismiss(move || {
+            if let Some(app) = k.0.upgrade() {
+                app.global::<ProgramsData>().set_banner(0);
+            }
+        });
+        data.on_open_folder(|| {
+            STATE.with_borrow(|st| {
+                if let Some(f) = &st.folder {
+                    win::open_folder(f);
+                }
+            });
+        });
         c.reload();
         c
     }
@@ -153,4 +197,123 @@ impl Programs {
         let rows: Vec<ProgramRow> = STATE.with_borrow(|st| st.view.iter().map(|p| row(p, &st.icons, admin)).collect());
         app.global::<ProgramsData>().set_rows(Rc::new(VecModel::from(rows)).into());
     }
+
+    /// Pide confirmación para desinstalar la fila `i` de la vista.
+    fn ask(&self, i: i32) {
+        let Some(app) = self.0.upgrade() else { return };
+        let Some((hive, key, name)) = STATE.with_borrow(|st| {
+            let p = st.view.get(usize::try_from(i).ok()?)?;
+            st.waiting.is_none().then(|| (p.hive, p.key.clone(), p.name.clone()))
+        }) else {
+            return;
+        };
+        if !programs::may_run(hive, app.get_admin()) {
+            return blocked(&app);
+        }
+        let k = self.clone();
+        let ask = Confirm {
+            title: &format!("¿Desinstalar {name}?"),
+            text: "Se abrirá el desinstalador del propio programa. Sigue sus pasos; cuando se cierre, WinCleaner comprobará si se ha desinstalado.",
+            lines: Vec::new(),
+            note: "",
+            confirm_text: "Abrir desinstalador",
+            danger: true,
+        };
+        confirm(&app, ask, move || k.start(hive, key));
+    }
+
+    /// Ya confirmado: vuelve a leer la entrada y los permisos (pueden haber cambiado desde que
+    /// se enseñó el botón), comprueba el `.exe` y lo lanza.
+    fn start(&self, hive: Hive, key: String) {
+        let Some(app) = self.0.upgrade() else { return };
+        if STATE.with_borrow(|st| st.waiting.is_some()) {
+            return;
+        }
+        if !programs::may_run(hive, app.get_admin()) {
+            return blocked(&app);
+        }
+        // Si ya no está, otro la quitó: basta con poner la lista al día.
+        let Some(raw) = win::reg::uninstall_entry(hive, key.clone()) else { return self.reload() };
+        let p = programs::from_raw(&raw);
+        let fail = |text: &str, folder: Option<PathBuf>| {
+            let title = format!("No se pudo abrir el desinstalador de {}.", p.name);
+            banner(&app, 2, &title, text);
+            let data = app.global::<ProgramsData>();
+            data.set_banner_path(folder.as_deref().map_or("".into(), |f| f.to_string_lossy().as_ref().into()));
+            STATE.with_borrow_mut(|st| st.folder = folder);
+        };
+        let Some(cmd) = win::system32().and_then(|s| programs::uninstall_command(&raw, &s).ok()) else {
+            return fail("Su entrada del registro no indica un desinstalador que se pueda abrir.", None);
+        };
+        let missing = || {
+            // La carpeta más cercana que aún existe.
+            let folder = Path::new(&cmd.exe).ancestors().skip(1).find(|a| a.is_dir()).map(Path::to_path_buf);
+            fail(&format!("El archivo no existe: {}. Puede que se borrara a mano.", cmd.exe), folder);
+        };
+        if !Path::new(&cmd.exe).is_file() {
+            return missing();
+        }
+        let launched = match uninstall::launch(&cmd) {
+            Ok(l) => l,
+            Err(LaunchError::NotFound) => return missing(),
+            Err(LaunchError::Denied) => return fail("Windows no dejó abrirlo, o se canceló el aviso de permisos.", None),
+            Err(LaunchError::Other(e)) => return fail(&format!("Windows devolvió el error {e}."), None),
+        };
+        let data = app.global::<ProgramsData>();
+        data.set_banner(0);
+        data.set_banner_title(format!("Esperando al desinstalador de {}…", p.name).into());
+        data.set_banner_text("Termina en su ventana. La lista se actualizará cuando se cierre.".into());
+        data.set_selected(-1);
+        data.set_phase(1);
+        let k = self.clone();
+        STATE.with_borrow_mut(|st| {
+            st.waiting = Some(Waiting { launched, hive, key, name: p.name, size: p.size, user_done: false });
+            st.timer.start(TimerMode::Repeated, Duration::from_secs(1), move || k.tick());
+        });
+    }
+
+    /// Mira si la espera ha acabado y, si es así, lo dice y recarga la lista y el resumen.
+    fn tick(&self) {
+        let Some(app) = self.0.upgrade() else { return };
+        let done = STATE.with_borrow_mut(|st| {
+            let w = st.waiting.as_ref()?;
+            let present = win::reg::key_exists(w.hive, &format!("{}\\{}", win::reg::UNINSTALL, w.key));
+            let alive = uninstall::alive(&w.launched);
+            let state = programs::wait_state(present, alive, w.launched.is_job(), w.user_done);
+            if state == WaitState::Waiting {
+                return None;
+            }
+            st.timer.stop();
+            // Al soltarlo se cierran sus handles; el desinstalador, si sigue, no se toca.
+            st.waiting.take().map(|w| (state, w))
+        });
+        let Some((state, w)) = done else { return };
+        app.global::<ProgramsData>().set_phase(0);
+        if state == WaitState::Removed {
+            let text = w.size.map_or(String::new(), |s| format!("Has recuperado {}.", format::bytes(s)));
+            banner(&app, 1, &format!("{} se ha desinstalado.", w.name), &text);
+        } else {
+            banner(&app, 3, &format!("{} sigue instalado.", w.name), "Puede que cancelaras el desinstalador.");
+        }
+        self.reload();
+        app.global::<SummaryData>().invoke_refresh();
+    }
+}
+
+fn banner(app: &AppWindow, kind: i32, title: &str, text: &str) {
+    let data = app.global::<ProgramsData>();
+    data.set_banner_title(title.into());
+    data.set_banner_text(text.into());
+    data.set_banner_path("".into());
+    data.set_banner(kind);
+}
+
+/// Aviso 4: una entrada de HKCU no se lanza siendo administrador.
+fn blocked(app: &AppWindow) {
+    banner(
+        app,
+        4,
+        "Este programa se instaló solo para tu usuario.",
+        "Reinicia WinCleaner sin permisos de administrador para desinstalarlo.",
+    );
 }

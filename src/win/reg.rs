@@ -6,7 +6,7 @@ use std::iter::once;
 use std::ptr::null_mut;
 
 use winapi::shared::minwindef::{DWORD, HKEY};
-use winapi::shared::winerror::{ERROR_INVALID_PARAMETER, ERROR_MORE_DATA, ERROR_SUCCESS};
+use winapi::shared::winerror::{ERROR_FILE_NOT_FOUND, ERROR_INVALID_PARAMETER, ERROR_MORE_DATA, ERROR_SUCCESS};
 use winapi::um::processenv::ExpandEnvironmentStringsW;
 use winapi::um::winnt::{
     KEY_READ, KEY_SET_VALUE, KEY_WOW64_32KEY, KEY_WOW64_64KEY, REG_BINARY, REG_DWORD, REG_EXPAND_SZ, REG_SZ,
@@ -22,7 +22,7 @@ use super::wide;
 /// Ningún valor que leemos se acerca a esto: más grande, se toma como ausente.
 const MAX_DATA: DWORD = 1 << 20;
 
-const UNINSTALL: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall";
+pub const UNINSTALL: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall";
 
 /// Clave abierta; se cierra al soltarla.
 struct Key(HKEY);
@@ -200,33 +200,36 @@ pub fn values(hive: Hive, path: &str) -> Vec<(String, String)> {
     out
 }
 
-#[expect(dead_code, reason = "lo usa la desinstalación (Task 8)")]
+/// Solo «no existe» cuenta como ausente: si no se puede abrir por otro motivo (permisos…),
+/// la desinstalación no se da por hecha.
 pub fn key_exists(hive: Hive, path: &str) -> bool {
-    Key::open(hive, path, KEY_READ).is_ok()
+    !matches!(Key::open(hive, path, KEY_READ), Err(ERROR_FILE_NOT_FOUND))
 }
 
 /// Todas las claves `Uninstall` de HKLM (64 y 32 bits) y de HKCU, tal como están.
 pub fn uninstall_entries() -> Vec<RawEntry> {
-    let mut out = Vec::new();
-    for hive in [Hive::Machine64, Hive::Machine32, Hive::User] {
-        for key in subkeys(hive, UNINSTALL) {
-            let Ok(k) = Key::open(hive, &format!("{UNINSTALL}\\{key}"), KEY_READ) else { continue };
-            let flag = |n| k.dword(n) == Some(1);
-            out.push(RawEntry {
-                hive,
-                display_name: k.str("DisplayName"),
-                publisher: k.str("Publisher"),
-                install_date: k.str("InstallDate"),
-                // Si no es REG_DWORD, `dword` da `None`: se toma como ausente.
-                estimated_size_kb: k.dword("EstimatedSize"),
-                uninstall_string: k.str("UninstallString"),
-                windows_installer: flag("WindowsInstaller"),
-                system_component: flag("SystemComponent"),
-                parent_key_name: k.str("ParentKeyName"),
-                display_icon: k.str("DisplayIcon"),
-                key,
-            });
-        }
-    }
-    out
+    [Hive::Machine64, Hive::Machine32, Hive::User]
+        .into_iter()
+        .flat_map(|hive| subkeys(hive, UNINSTALL).into_iter().filter_map(move |key| uninstall_entry(hive, key)))
+        .collect()
+}
+
+/// Una clave `Uninstall`, leída de nuevo (p. ej. al confirmar la desinstalación).
+pub fn uninstall_entry(hive: Hive, key: String) -> Option<RawEntry> {
+    let k = Key::open(hive, &format!("{UNINSTALL}\\{key}"), KEY_READ).ok()?;
+    let flag = |n| k.dword(n) == Some(1);
+    Some(RawEntry {
+        hive,
+        display_name: k.str("DisplayName"),
+        publisher: k.str("Publisher"),
+        install_date: k.str("InstallDate"),
+        // Si no es REG_DWORD, `dword` da `None`: se toma como ausente.
+        estimated_size_kb: k.dword("EstimatedSize"),
+        uninstall_string: k.str("UninstallString"),
+        windows_installer: flag("WindowsInstaller"),
+        system_component: flag("SystemComponent"),
+        parent_key_name: k.str("ParentKeyName"),
+        display_icon: k.str("DisplayIcon"),
+        key,
+    })
 }

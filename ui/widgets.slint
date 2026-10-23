@@ -183,11 +183,13 @@ export component Note inherits Rectangle {
                 wrap: word-wrap;
             }
         }
-        // Acciones a la derecha.
-        HorizontalLayout {
-            spacing: 8px;
-            alignment: end;
-            @children
+        // Acciones a la derecha, arriba y a su altura (sin estirarse con el texto).
+        VerticalLayout {
+            alignment: start;
+            HorizontalLayout {
+                spacing: 8px;
+                @children
+            }
         }
     }
 }

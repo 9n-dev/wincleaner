@@ -2,6 +2,7 @@
 
 pub mod icon;
 pub mod reg;
+pub mod uninstall;
 
 use std::ffi::{OsStr, OsString};
 use std::iter::once;
@@ -180,6 +181,22 @@ pub fn open_in_explorer(path: &Path) {
     let _ = Command::new(windows.join("explorer.exe"))
         .raw_arg(format!("/select,\"{}\"", path.display()))
         .spawn();
+}
+
+/// `C:\\Windows\\System32`, para `programs::uninstall_command`.
+pub fn system32() -> Option<String> {
+    known_folder(&FOLDERID_System).map(|p| p.to_string_lossy().into_owned())
+}
+
+/// Abre la carpeta `dir` en el Explorador, solo si existe. Con ShellExecute y la ruta
+/// absoluta de una carpeta, no hay línea de comandos que partir ni programa que buscar.
+pub fn open_folder(dir: &Path) {
+    if !dir.is_absolute() || !dir.is_dir() {
+        return;
+    }
+    let (verb, file) = (wide("open"), wide(dir));
+    // SAFETY: cadenas UTF-16 terminadas en nulo que viven durante la llamada.
+    unsafe { ShellExecuteW(null_mut(), verb.as_ptr(), file.as_ptr(), null(), null(), SW_SHOWNORMAL) };
 }
 
 fn wide(s: impl AsRef<OsStr>) -> Vec<u16> {

@@ -205,6 +205,53 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             guarda(&format!("wcv2-{nombre}{suffix}"), &headless::render(app.window(), w, h), w, h)?;
         }
     }
+
+    // La desinstalación de Zoom Workplace: confirmar, esperar, hecho y error.
+    data.set_query("".into());
+    modal.set_title("¿Desinstalar Zoom Workplace?".into());
+    modal.set_text("Se abrirá el desinstalador del propio programa. Sigue sus pasos; cuando se cierre, WinCleaner comprobará si se ha desinstalado.".into());
+    modal.set_lines(model(Vec::new()));
+    modal.set_note("".into());
+    modal.set_confirm_text("Abrir desinstalador".into());
+    let sin_zoom: Vec<_> = progs.iter().filter(|p| p.name != "Zoom Workplace").cloned().collect();
+    for (nombre, rows, selected, phase, banner, title, text, path) in [
+        ("programas-confirmar", progs.to_vec(), 2, 0, 0, "", "", ""),
+        (
+            "programas-esperando",
+            progs.to_vec(),
+            -1,
+            1,
+            0,
+            "Esperando al desinstalador de Zoom Workplace…",
+            "Termina en su ventana. La lista se actualizará cuando se cierre.",
+            "",
+        ),
+        ("programas-hecho", sin_zoom, -1, 0, 1, "Zoom Workplace se ha desinstalado.", "Has recuperado 412 MB.", ""),
+        (
+            "programas-error",
+            progs.to_vec(),
+            2,
+            0,
+            2,
+            "No se pudo abrir el desinstalador de Zoom Workplace.",
+            "El archivo no existe: C:\\Users\\ana\\AppData\\Roaming\\Zoom\\uninstall\\Installer.exe. Puede que se borrara a mano.",
+            "C:\\Users\\ana\\AppData\\Roaming\\Zoom",
+        ),
+    ] {
+        data.set_subtitle(if banner == 1 { "85 instalados · 37,8 GB" } else { "86 instalados · 38,2 GB" }.into());
+        data.set_rows(model(rows));
+        data.set_selected(selected);
+        data.set_phase(phase);
+        data.set_banner(banner);
+        data.set_banner_title(title.into());
+        data.set_banner_text(text.into());
+        data.set_banner_path(path.into());
+        modal.set_open(nombre == "programas-confirmar");
+        for (suffix, w, h) in [("", 1100, 720), ("-min", 880, 600)] {
+            guarda(&format!("wcv2-{nombre}{suffix}"), &headless::render(app.window(), w, h), w, h)?;
+        }
+    }
+    modal.set_open(false);
     app.set_section(0);
 
     // Todos los componentes, con el modal abierto encima.
