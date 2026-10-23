@@ -3,7 +3,6 @@
 #[cfg(windows)]
 mod gui;
 #[cfg(windows)]
-#[expect(dead_code, reason = "unidades y Explorador vuelven con el Resumen y Analizar")]
 mod win;
 
 #[cfg(not(windows))]

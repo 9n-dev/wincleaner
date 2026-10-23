@@ -20,6 +20,8 @@ export global Palette {
 // Si la familia no está (Windows 10), Slint usa la del sistema, Segoe UI.
 export global Type {
     out property <string> family: "Segoe UI Variable Text";
+    // Rutas y carpetas. Si falta, Slint usa la fuente del sistema.
+    out property <string> mono: "Consolas";
     out property <length> body: 13px;
     out property <length> title: 22px;
     out property <length> label: 12px;

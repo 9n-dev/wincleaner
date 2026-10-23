@@ -1,8 +1,9 @@
 import { Palette, Type, Icon } from "theme.slint";
 import { ConfirmModal, Modal, ModalLine } from "widgets.slint";
+import { AnalyzePage, AnalyzeData, DirRow } from "pages/analyze.slint";
 import { CleanPage, CleanData, CleanPhase, CatState, CategoryRow, ReportRow } from "pages/clean.slint";
 
-export { Modal, ModalLine, CleanData, CleanPhase, CatState, CategoryRow, ReportRow }
+export { Modal, ModalLine, CleanData, CleanPhase, CatState, CategoryRow, ReportRow, AnalyzeData, DirRow }
 
 // Estado de la barra lateral que rellena Rust.
 export global Nav {
@@ -290,6 +291,11 @@ export component AppWindow inherits Window {
         background: Palette.bg;
 
         if root.section == 1: CleanPage {
+            width: parent.width;
+            height: parent.height;
+            compact: root.compact;
+        }
+        if root.section == 2: AnalyzePage {
             width: parent.width;
             height: parent.height;
             compact: root.compact;

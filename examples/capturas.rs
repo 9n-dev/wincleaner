@@ -117,8 +117,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     app.set_locked(false);
-    app.set_section(0);
     modal.set_open(false);
+
+    // Analizar, con los datos de las maquetas.
+    use wincleaner::ui::{AnalyzeData, DirRow};
+    let data = app.global::<AnalyzeData>();
+    data.set_drives(model(["C: · 64 GB libres", "D: · 1,2 TB libres"].map(Into::into).to_vec()));
+    data.set_title("Analizando C:…".into());
+    data.set_progress("412 803 archivos · 1 min 12 s".into());
+    data.set_current("C:\\Users\\ana\\AppData\\Local\\Packages\\…".into());
+    data.set_summary("Analizados 1 284 112 archivos en 2 min 41 s.".into());
+    data.set_rows(model(
+        [
+            ("C:\\Users\\ana\\AppData\\Local\\Steam\\steamapps\\common\\Baldur's Gate 3", "118 GB", 1.0),
+            ("C:\\Users\\ana\\Videos\\OBS", "41,2 GB", 0.35),
+            ("C:\\Windows\\WinSxS", "9,8 GB", 0.08),
+            ("C:\\Users\\ana\\AppData\\Local\\Docker\\wsl", "8,6 GB", 0.07),
+            ("C:\\hiberfil.sys", "6,4 GB", 0.05),
+            ("C:\\Users\\ana\\AppData\\Local\\Google\\Chrome\\User Data", "3,9 GB", 0.03),
+            ("C:\\ProgramData\\Package Cache", "2,7 GB", 0.02),
+            ("C:\\Users\\ana\\Downloads\\isos", "2,1 GB", 0.02),
+        ]
+        .map(|(p, s, share)| DirRow { path: p.into(), size: s.into(), share })
+        .to_vec(),
+    ));
+    app.set_section(2);
+    for (nombre, phase, selected) in [("analizar", 0, -1), ("analizar-progreso", 1, -1), ("analizar-resultados", 2, 1)] {
+        data.set_phase(phase);
+        data.set_selected(selected);
+        for (suffix, w, h) in [("", 1100, 720), ("-min", 880, 600)] {
+            guarda(&format!("wcv2-{nombre}{suffix}"), &headless::render(app.window(), w, h), w, h)?;
+        }
+    }
+    app.set_section(0);
 
     // Todos los componentes, con el modal abierto encima.
     use muestra::{Modal, ModalLine, Muestra};

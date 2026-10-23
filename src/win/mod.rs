@@ -14,7 +14,7 @@ use winapi::shared::ntdef::{PULARGE_INTEGER, PWSTR};
 use winapi::shared::winerror::{E_UNEXPECTED, S_OK};
 use winapi::um::combaseapi::{CoInitializeEx, CoTaskMemFree, CoUninitialize};
 use winapi::um::fileapi::{
-    GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDriveStringsW, GetLongPathNameW,
+    GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDriveStringsW, GetLongPathNameW, GetVolumeInformationW,
 };
 use winapi::um::knownfolders::{
     FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads, FOLDERID_LocalAppData,
@@ -39,8 +39,11 @@ unsafe extern "system" {
     fn IsUserAnAdmin() -> BOOL;
 }
 
+#[expect(dead_code, reason = "label y total los usa el Resumen, en la Task 5")]
 pub struct Drive {
     pub root: String,
+    /// Nombre del volumen; vacío si no se pudo leer.
+    pub label: String,
     pub free: u64,
     pub total: u64,
 }
@@ -149,9 +152,23 @@ pub fn fixed_drives() -> Vec<Drive> {
                     null_mut(),
                 )
             };
-            (ok != 0).then_some(Drive { root, free, total })
+            (ok != 0).then(|| Drive { label: volume_label(&w), root, free, total })
         })
         .collect()
+}
+
+/// Nombre del volumen de la raíz `w` (UTF-16 terminada en nulo), o vacío si falla.
+fn volume_label(w: &[u16]) -> String {
+    let mut buf = [0u16; 261];
+    // SAFETY: `w` termina en nulo; `buf` mide los 261 que se le dicen; lo demás es opcional.
+    let ok = unsafe {
+        GetVolumeInformationW(w.as_ptr(), buf.as_mut_ptr(), buf.len() as DWORD, null_mut(), null_mut(), null_mut(), null_mut(), 0)
+    };
+    if ok == 0 {
+        return String::new();
+    }
+    let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    String::from_utf16_lossy(&buf[..len])
 }
 
 /// Abre el Explorador con `path` seleccionado. Se lanza por ruta absoluta: con solo

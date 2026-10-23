@@ -38,7 +38,7 @@ export global CleanData {
     callback recalc();
 }
 
-component Head {
+export component Head {
     in property <string> title;
     in property <string> text;
 
@@ -69,7 +69,7 @@ component Head {
 }
 
 // Fondo y borde de las listas. El borde va encima, para que nada lo tape.
-component ListBox inherits Rectangle {
+export component ListBox inherits Rectangle {
     background: Palette.s1;
     border-radius: 12px;
 
