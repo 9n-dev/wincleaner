@@ -8,7 +8,9 @@ use std::sync::Mutex;
 
 use winapi::shared::guiddef::GUID;
 use winapi::shared::minwindef::{BOOL, BYTE, DWORD, FILETIME};
-use winapi::shared::winerror::{TRUST_E_NOSIGNATURE, TRUST_E_PROVIDER_UNKNOWN, TRUST_E_SUBJECT_FORM_UNKNOWN};
+use winapi::shared::winerror::{
+    CERT_E_REVOKED, TRUST_E_BAD_DIGEST, TRUST_E_EXPLICIT_DISTRUST, TRUST_E_NOSIGNATURE, TRUST_E_SUBJECT_NOT_TRUSTED,
+};
 use winapi::um::fileapi::{CreateFileW, OPEN_EXISTING};
 use winapi::um::handleapi::INVALID_HANDLE_VALUE;
 use winapi::um::softpub::WINTRUST_ACTION_GENERIC_VERIFY_V2;
@@ -25,8 +27,12 @@ use super::{Handle, wide};
 pub enum Signature {
     /// Firma válida; el nombre del firmante (puede ir vacío).
     Signed(String),
+    /// Ni firma propia ni catálogo que lo incluya.
     Unsigned,
+    /// Firma mala de forma explícita.
     Invalid,
+    /// No se pudo comprobar (E/S, acceso, cadena sin red, archivo que ya no está…).
+    Unknown,
 }
 
 type HCatAdmin = HANDLE;
@@ -172,8 +178,20 @@ fn signer(state: HANDLE) -> String {
     String::from_utf16_lossy(&buf[..n])
 }
 
+/// Resultado de WinVerifyTrust:
+///
+/// | HRESULT | Firma |
+/// |---|---|
+/// | 0 (`ERROR_SUCCESS`) | `Signed` |
+/// | `TRUST_E_BAD_DIGEST` (0x80096010), `TRUST_E_EXPLICIT_DISTRUST` (0x800B0111), `CERT_E_REVOKED` (0x800B010C), `TRUST_E_SUBJECT_NOT_TRUSTED` (0x800B0004) | `Invalid` |
+/// | `TRUST_E_NOSIGNATURE` (0x800B0100) del archivo | se prueba el catálogo; si no está en ninguno, `Unsigned` |
+/// | cualquier otro (cadena que no se puede construir sin red, raíz desconocida, E/S…) | `Unknown` |
 fn from_result(r: i32, signer: String) -> Signature {
-    if r == 0 { Signature::Signed(signer) } else { Signature::Invalid }
+    match r {
+        0 => Signature::Signed(signer),
+        TRUST_E_BAD_DIGEST | TRUST_E_EXPLICIT_DISTRUST | CERT_E_REVOKED | TRUST_E_SUBJECT_NOT_TRUSTED => Signature::Invalid,
+        _ => Signature::Unknown,
+    }
 }
 
 /// Comprueba la firma de `path`: primero la del propio archivo y, si no tiene, la de los
@@ -190,14 +208,19 @@ pub fn check(path: &str) -> Signature {
     // SAFETY: la unión es un puntero; `file` vive durante `verify`.
     unsafe { *data.u.pFile_mut() = &mut file };
     let (r, signer) = verify(data);
-    if ![TRUST_E_NOSIGNATURE, TRUST_E_SUBJECT_FORM_UNKNOWN, TRUST_E_PROVIDER_UNKNOWN].contains(&r) {
+    if r != TRUST_E_NOSIGNATURE {
         return from_result(r, signer);
     }
-    catalog(&w).unwrap_or(Signature::Unsigned)
+    catalog(&w)
 }
 
-/// Firma por catálogo; `None` si no está en ninguno (o no se puede saber).
-fn catalog(w: &[u16]) -> Option<Signature> {
+/// Firma por catálogo: `Unsigned` si no está en ninguno; `Unknown` si no se puede saber.
+fn catalog(w: &[u16]) -> Signature {
+    catalog_inner(w).unwrap_or(Signature::Unknown)
+}
+
+/// `None`: algún paso falló antes de saber si está en un catálogo.
+fn catalog_inner(w: &[u16]) -> Option<Signature> {
     // SAFETY: ruta terminada en nulo; solo lectura, compartida con todo.
     let file = Handle(unsafe {
         CreateFileW(
@@ -230,7 +253,8 @@ fn catalog(w: &[u16]) -> Option<Signature> {
     // SAFETY: hash de `n` bytes; sin catálogo anterior.
     let info = unsafe { CryptCATAdminEnumCatalogFromHash(admin.0, hash.as_mut_ptr(), n as DWORD, 0, null_mut()) };
     if info.is_null() {
-        return None;
+        // No está en ningún catálogo: de verdad sin firma.
+        return Some(Signature::Unsigned);
     }
     let info = CatInfo(&admin, info);
     let mut cat = CatalogFile { cb_struct: size_of::<CatalogFile>() as DWORD, file: [0; 260] };

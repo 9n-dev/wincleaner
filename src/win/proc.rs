@@ -5,9 +5,9 @@ use std::mem::zeroed;
 use std::ptr::null_mut;
 
 use winapi::shared::minwindef::{BOOL, DWORD, FALSE, FILETIME, LPVOID, UINT};
-use winapi::shared::winerror::{ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, WAIT_TIMEOUT};
+use winapi::shared::winerror::{ERROR_ACCESS_DENIED, ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_PARAMETER, WAIT_TIMEOUT};
 use winapi::um::handleapi::INVALID_HANDLE_VALUE;
-use winapi::um::processthreadsapi::{GetProcessTimes, GetSystemTimes, OpenProcess, TerminateProcess};
+use winapi::um::processthreadsapi::{GetCurrentProcessId, GetProcessTimes, GetSystemTimes, OpenProcess, TerminateProcess};
 use winapi::um::psapi::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
 use winapi::um::synchapi::WaitForSingleObject;
 use winapi::um::sysinfoapi::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
@@ -64,13 +64,22 @@ fn open(pid: u32, access: DWORD) -> Option<Handle> {
     (!h.is_null()).then_some(Handle(h))
 }
 
-/// Ruta completa del ejecutable del proceso `h`.
+/// Ruta completa del ejecutable del proceso `h`. Empieza con 1024 caracteres y, si no
+/// caben, lo repite con más, hasta el máximo de una ruta larga (32 768).
 fn image(h: &Handle) -> Option<String> {
-    let mut buf = vec![0u16; 32768];
-    let mut n = buf.len() as DWORD;
-    // SAFETY: `buf` mide `n` u16; si tiene éxito, `n` pasa a ser la longitud sin el nulo.
-    let ok = unsafe { QueryFullProcessImageNameW(h.0, 0, buf.as_mut_ptr(), &mut n) };
-    (ok != 0 && n > 0).then(|| String::from_utf16_lossy(&buf[..n as usize]))
+    let mut len = 1024;
+    loop {
+        let mut buf = vec![0u16; len];
+        let mut n = len as DWORD;
+        // SAFETY: `buf` mide `n` u16; si tiene éxito, `n` pasa a ser la longitud sin el nulo.
+        if unsafe { QueryFullProcessImageNameW(h.0, 0, buf.as_mut_ptr(), &mut n) } != 0 {
+            return (n > 0).then(|| String::from_utf16_lossy(&buf[..(n as usize).min(len)]));
+        }
+        if last_error() != ERROR_INSUFFICIENT_BUFFER || len >= 32768 {
+            return None;
+        }
+        len = (len * 4).min(32768);
+    }
 }
 
 /// Ruta completa del ejecutable de `pid`, o `None` si ya no existe o no se puede leer.
@@ -163,7 +172,12 @@ pub fn system() -> (u64, u64, u64, u64) {
 /// demás aunque uno falle y devuelve el primer error.
 pub fn terminate(pids: &[u32], expected_exe: &str) -> Result<(), TermError> {
     let mut first = None;
+    let me = own_pid();
     for &pid in pids {
+        // WinCleaner no se termina a sí mismo.
+        if pid == me {
+            continue;
+        }
         if procs::kill_target(expected_exe, exe_of(pid).as_deref()) != KillTarget::Kill {
             continue;
         }
@@ -205,8 +219,23 @@ fn kill(pid: u32, expected_exe: &str) -> Result<(), TermError> {
     Err(if e == ERROR_ACCESS_DENIED { TermError::Denied } else { TermError::Other(e) })
 }
 
+/// PID de WinCleaner.
+pub fn own_pid() -> u32 {
+    // SAFETY: sin argumentos.
+    unsafe { GetCurrentProcessId() }
+}
+
 /// `FileDescription` del ejecutable, en el primer idioma de `\VarFileInfo\Translation`.
 pub fn description(exe: &str) -> Option<String> {
+    version_string(exe, "FileDescription")
+}
+
+/// `CompanyName` del ejecutable (el editor), igual que `description`.
+pub fn company(exe: &str) -> Option<String> {
+    version_string(exe, "CompanyName")
+}
+
+fn version_string(exe: &str, key: &str) -> Option<String> {
     let w = wide(exe);
     let mut dummy: DWORD = 0;
     // SAFETY: ruta terminada en nulo; `dummy` es nuestro.
@@ -233,7 +262,7 @@ pub fn description(exe: &str) -> Option<String> {
     }
     // SAFETY: hay al menos 4 bytes dentro de `buf`: idioma y página de códigos (u16 cada uno).
     let (lang, cp) = unsafe { (t.cast::<u16>().read_unaligned(), t.add(2).cast::<u16>().read_unaligned()) };
-    let (p, n) = query(&format!(r"\StringFileInfo\{lang:04x}{cp:04x}\FileDescription"))?;
+    let (p, n) = query(&format!(r"\StringFileInfo\{lang:04x}{cp:04x}\{key}"))?;
     // SAFETY: para cadenas, VerQueryValueW da `n` caracteres UTF-16 (con el nulo) dentro de
     // `buf`; se leen sin suponer alineación.
     let s: Vec<u16> = (0..n as usize).map(|i| unsafe { p.cast::<u16>().add(i).read_unaligned() }).collect();

@@ -9,7 +9,7 @@ use std::rc::Rc;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use slint::{Color, ComponentHandle, Image, Rgba8Pixel, SharedPixelBuffer, Timer, TimerMode, VecModel, Weak};
+use slint::{Color, ComponentHandle, Image, Model, Rgba8Pixel, SharedPixelBuffer, Timer, TimerMode, VecModel, Weak};
 use wincleaner::format;
 use wincleaner::paths;
 use wincleaner::procs::{self, Group};
@@ -30,8 +30,9 @@ struct Meta {
     icon: Icon,
 }
 
-/// Una vuelta del hilo de trabajo.
+/// Una vuelta del hilo de trabajo. Sin `full` (la del Resumen), `groups` y `metas` van vacíos.
 struct Snap {
+    full: bool,
     groups: Vec<Group>,
     metas: Vec<Meta>,
     /// Tiempo de CPU de cada PID, para la siguiente vuelta.
@@ -51,6 +52,9 @@ struct State {
     prev: Option<(u64, u64, HashMap<u32, u64>)>,
     /// Hay una vuelta en marcha: el temporizador no pide otra.
     busy: bool,
+    /// El único modelo de `ProcsData.rows`: se cambia fila a fila para que Slint no rehaga la
+    /// lista (se perderían clics, foco y el anuncio del lector de pantalla).
+    model: Rc<VecModel<ProcRow>>,
     timer: Timer,
 }
 
@@ -69,6 +73,8 @@ fn sub(sig: &Signature, exe: &str, temp: Option<&str>) -> String {
     let base = match sig {
         Signature::Signed(s) if s.is_empty() => return "Firmado".into(),
         Signature::Signed(s) => return s.clone(),
+        // No se pudo comprobar: no se dice «Sin firma»; se enseña el editor, si lo pone.
+        Signature::Unknown => return win::proc::company(exe).unwrap_or_default(),
         Signature::Unsigned => "Sin firma",
         Signature::Invalid => "Firma no válida",
     };
@@ -106,6 +112,22 @@ fn pct(p: f32) -> String {
     format!("{} %", p.round() as u32)
 }
 
+/// Pone `rows` en `model` sin cambiar de modelo: las filas comunes se cambian solo si son
+/// distintas, y la cola se añade o se quita.
+fn update(model: &VecModel<ProcRow>, rows: Vec<ProcRow>) {
+    let old = model.row_count();
+    while model.row_count() > rows.len() {
+        model.remove(model.row_count() - 1);
+    }
+    for (i, r) in rows.into_iter().enumerate() {
+        if i >= old {
+            model.push(r);
+        } else if model.row_data(i).as_ref() != Some(&r) {
+            model.set_row_data(i, r);
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Procs {
     app: Weak<AppWindow>,
@@ -119,6 +141,7 @@ impl Procs {
         // Sin la carpeta de Windows, todo queda bloqueado (`procs::blocked` falla cerrado).
         let c = Procs { app: app.as_weak(), system_root: win::windows_dir().unwrap_or_default(), temp };
         let data = app.global::<ProcsData>();
+        data.set_rows(STATE.with_borrow(|st| st.model.clone()).into());
         let k = c.clone();
         data.on_visible(move |v| k.visible(v));
         let k = c.clone();
@@ -138,7 +161,7 @@ impl Procs {
             }
         });
         // Una vuelta para la tarjeta del Resumen.
-        c.refresh();
+        c.refresh(false);
         c
     }
 
@@ -148,20 +171,21 @@ impl Procs {
             STATE.with_borrow_mut(|st| {
                 // Al volver, la CPU de la primera vuelta es «—»: no se promedia el rato fuera.
                 st.prev = None;
-                st.timer.start(TimerMode::Repeated, Duration::from_secs(2), move || k.refresh());
+                st.timer.start(TimerMode::Repeated, Duration::from_secs(2), move || k.refresh(true));
             });
-            self.refresh();
+            self.refresh(true);
         } else {
             STATE.with_borrow(|st| st.timer.stop());
             // Al volver al Resumen, su tarjeta se pone al día.
             if self.app.upgrade().is_some_and(|a| a.get_section() == 0) {
-                self.refresh();
+                self.refresh(false);
             }
         }
     }
 
-    /// Pide una vuelta al hilo, salvo si la anterior aún no ha vuelto.
-    fn refresh(&self) {
+    /// Pide una vuelta al hilo, salvo si la anterior aún no ha vuelto. Sin `full`, solo el
+    /// recuento y la memoria (para el Resumen): ni firmas, ni descripciones, ni iconos.
+    fn refresh(&self, full: bool) {
         if STATE.with_borrow_mut(|st| std::mem::replace(&mut st.busy, true)) {
             return;
         }
@@ -171,10 +195,18 @@ impl Procs {
             let sys = win::proc::system();
             let count = v.len();
             let cpu = v.iter().map(|p| (p.pid, p.cpu_100ns)).collect();
-            let groups = procs::group(v, &k.system_root);
-            // SHGetFileInfoW (el icono de reserva) necesita COM en este hilo.
-            let metas = win::with_com(|| groups.iter().map(|g| meta(g, k.temp.as_deref())).collect());
-            let snap = Snap { groups, metas, cpu, sys, count };
+            let (mut groups, mut metas) = (Vec::new(), Vec::new());
+            if full {
+                groups = procs::group(v, &k.system_root);
+                // WinCleaner no se ofrece a terminarse a sí mismo.
+                let me = win::proc::own_pid();
+                for g in groups.iter_mut().filter(|g| g.pids.contains(&me)) {
+                    g.blocked = true;
+                }
+                // SHGetFileInfoW (el icono de reserva) necesita COM en este hilo.
+                metas = win::with_com(|| groups.iter().map(|g| meta(g, k.temp.as_deref())).collect());
+            }
+            let snap = Snap { full, groups, metas, cpu, sys, count };
             let _ = k.app.clone().upgrade_in_event_loop(move |app| k.loaded(&app, snap));
         });
     }
@@ -182,6 +214,17 @@ impl Procs {
     fn loaded(&self, app: &AppWindow, s: Snap) {
         let data = app.global::<ProcsData>();
         let (total, idle, used, all) = s.sys;
+        let n = s.count;
+        let procesos = if n == 1 { "1 proceso".to_string() } else { format!("{n} procesos") };
+        summary::set_procs(app, &format!("{procesos} · {}", format::bytes(used)));
+        if !s.full {
+            STATE.with_borrow_mut(|st| st.busy = false);
+            // Si mientras tanto se entró en Procesos, su vuelta se saltó: se pide ahora.
+            if app.get_section() == 4 {
+                self.refresh(true);
+            }
+            return;
+        }
         STATE.with_borrow_mut(|st| {
             st.busy = false;
             // Se mantiene la fila elegida aunque cambie de sitio.
@@ -223,14 +266,11 @@ impl Procs {
                     }
                 })
                 .collect();
-            let n = s.count;
-            let procesos = if n == 1 { "1 proceso".to_string() } else { format!("{n} procesos") };
             data.set_subtitle(
                 format!("{procesos} · CPU {cpu_total} · Memoria {} de {}", format::bytes(used), format::bytes(all)).into(),
             );
-            data.set_rows(Rc::new(VecModel::from(rows)).into());
+            update(&st.model, rows);
             data.set_selected(selected.map_or(-1, |i| i as i32));
-            summary::set_procs(app, &format!("{procesos} · {}", format::bytes(used)));
             st.prev = Some((total, idle, s.cpu));
             st.groups = s.groups;
             st.names = s.metas.into_iter().map(|m| m.name).collect();
@@ -276,7 +316,7 @@ impl Procs {
             Some((g.pids.clone(), exe))
         });
         // Ya no está (o se ha vuelto intocable): basta con refrescar.
-        let Some((pids, exe)) = found else { return self.refresh() };
+        let Some((pids, exe)) = found else { return self.refresh(true) };
         let k = self.clone();
         std::thread::spawn(move || {
             let r = win::proc::terminate(&pids, &exe);
@@ -296,7 +336,7 @@ impl Procs {
                         data.set_denied(true);
                     }
                 }
-                k.refresh();
+                k.refresh(true);
             });
         });
     }
