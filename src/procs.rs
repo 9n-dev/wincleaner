@@ -1,6 +1,6 @@
 //! Reglas puras de procesos: agrupar, bloquear, % de CPU y verificar antes de terminar.
 
-use crate::paths::is_inside;
+use crate::paths::{is_inside, is_valid, strip_verbatim};
 use std::collections::HashMap;
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -33,11 +33,17 @@ pub enum KillTarget {
     Mismatch,
 }
 
-/// Ante la duda, bloqueado: crítico, sin ruta conocida (o vacía) o dentro de `system_root`.
-/// Sin `system_root` utilizable no se puede decidir, así que también se bloquea.
+/// Ante la duda, bloqueado: crítico, sin ruta conocida (o vacía), o con una ruta (o `system_root`)
+/// que `paths` no sabe interpretar (`\\?\UNC`, `\Device\…`, `//?/…`), o dentro de `system_root`.
 pub fn blocked(exe: Option<&str>, critical: bool, system_root: &str) -> bool {
     let Some(exe) = exe.filter(|e| !e.trim().is_empty()) else { return true };
-    critical || system_root.trim().is_empty() || is_inside(exe, system_root)
+    // Se quita el prefijo `\\?\` de ambas; `None` solo si es de red (UNC).
+    let (Some(exe), Some(root)) = (norm(exe), norm(system_root)) else { return true };
+    critical || !is_valid(exe) || !is_valid(root) || is_inside(exe, root)
+}
+
+fn norm(p: &str) -> Option<&str> {
+    if p.starts_with(r"\\?\") { strip_verbatim(p) } else { Some(p) }
 }
 
 /// Agrupa por ruta del exe en minúsculas (o por nombre si no hay) y ordena por memoria, de mayor a menor.
@@ -46,7 +52,7 @@ pub fn group(v: Vec<ProcInfo>, system_root: &str) -> Vec<Group> {
     let mut out: Vec<Group> = Vec::new();
     // Un grupo se bloquea si se bloquea cualquiera de sus procesos.
     for p in v {
-        let key = p.exe.as_deref().filter(|e| !e.is_empty()).unwrap_or(&p.name).to_lowercase();
+        let key = p.exe.as_deref().filter(|e| !e.is_empty()).unwrap_or(&p.name).to_ascii_lowercase();
         let b = blocked(p.exe.as_deref(), p.critical, system_root);
         let i = *idx.entry(key.clone()).or_insert_with(|| {
             out.push(Group { key, name: p.name.clone(), exe: p.exe.clone(), ..Group::default() });
@@ -119,6 +125,14 @@ mod tests {
         assert!(blocked(Some("C:\\P\\a.exe"), true, "C:\\Windows"));
         assert!(blocked(Some("C:\\P\\a.exe"), false, ""));
         assert!(blocked(Some(""), false, "C:\\Windows"));
+        let r = "C:\\Windows";
+        assert!(blocked(Some(r"\\?\C:\Windows\x.exe"), false, r));
+        assert!(blocked(Some(r"\Device\HarddiskVolume3\Windows\x.exe"), false, r));
+        assert!(blocked(Some("//?/C:/Windows/x.exe"), false, r));
+        assert!(blocked(Some(r"\\?\UNC\srv\x.exe"), false, r));
+        assert!(!blocked(Some(r"\\?\C:\P\a.exe"), false, r));
+        assert!(!blocked(Some(r"C:\P\a.exe"), false, r"\\?\C:\Windows"));
+        assert!(blocked(Some(r"C:\Windows\a.exe"), false, r"\\?\C:\Windows"));
     }
 
     #[test]

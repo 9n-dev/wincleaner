@@ -28,6 +28,11 @@ fn parse(p: &str) -> Option<Vec<String>> {
     if comps.is_empty() { None } else { Some(comps) }
 }
 
+/// La ruta tiene una forma que `is_inside` sabe interpretar.
+pub fn is_valid(p: &str) -> bool {
+    parse(p).is_some()
+}
+
 /// `path` es descendiente estricto de `root`.
 pub fn is_inside(path: &str, root: &str) -> bool {
     match (parse(path), parse(root)) {
