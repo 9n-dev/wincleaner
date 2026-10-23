@@ -142,6 +142,8 @@ export component Note inherits Rectangle {
     in property <Tone> kind: Tone.info;
     in property <string> title;
     in property <string> text;
+    // Si va vacío, el del tono.
+    in property <string> icon;
     property <color> c: Tones.color(root.kind);
 
     border-radius: 10px;
@@ -158,7 +160,7 @@ export component Note inherits Rectangle {
         VerticalLayout {
             alignment: start;
             Icon {
-                name: root.kind == Tone.ok ? "shieldok" : root.kind == Tone.info ? "info" : "warn";
+                name: root.icon != "" ? root.icon : root.kind == Tone.ok ? "shieldok" : root.kind == Tone.info ? "info" : "warn";
                 color: root.c;
                 size: 18px;
             }
@@ -172,7 +174,7 @@ export component Note inherits Rectangle {
                 font-weight: 600;
                 wrap: word-wrap;
             }
-            Text {
+            if root.text != "": Text {
                 text: root.text;
                 color: Palette.mu;
                 wrap: word-wrap;

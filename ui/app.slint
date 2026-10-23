@@ -1,7 +1,8 @@
 import { Palette, Type, Icon } from "theme.slint";
 import { ConfirmModal, Modal, ModalLine } from "widgets.slint";
+import { CleanPage, CleanData, CleanPhase, CatState, CategoryRow, ReportRow } from "pages/clean.slint";
 
-export { Modal, ModalLine }
+export { Modal, ModalLine, CleanData, CleanPhase, CatState, CategoryRow, ReportRow }
 
 // Estado de la barra lateral que rellena Rust.
 export global Nav {
@@ -206,7 +207,10 @@ export component AppWindow inherits Window {
                 compact: root.compact;
                 enabled: !root.locked;
                 badge: i == 5 ? Nav.security-badge : 0;
-                clicked => { root.section = i; }
+                // La guarda cubre también la acción de accesibilidad, que no mira `enabled`.
+                clicked => {
+                    if (!root.locked) { root.section = i; }
+                }
             }
 
             Rectangle { vertical-stretch: 1; }
@@ -277,13 +281,19 @@ export component AppWindow inherits Window {
         }
     }
 
-    // Zona principal: las páginas llegan en las tareas siguientes.
+    // Zona principal: una página por sección.
     Rectangle {
         x: sidebar.width;
         y: 0;
         width: root.width - sidebar.width;
         height: root.height;
         background: Palette.bg;
+
+        if root.section == 1: CleanPage {
+            width: parent.width;
+            height: parent.height;
+            compact: root.compact;
+        }
     }
 
     // El modal va sobre todo.

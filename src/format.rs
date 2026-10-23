@@ -30,6 +30,21 @@ pub fn count(n: u64) -> String {
     out
 }
 
+/// Duración legible: "menos de 1 s", "5 s", "2 min 41 s", "1 h 2 min". Las partes a cero
+/// se omiten ("2 min", "1 h").
+pub fn duration(d: std::time::Duration) -> String {
+    let s = d.as_secs();
+    let (h, m, s) = (s / 3600, s / 60 % 60, s % 60);
+    match (h, m, s) {
+        (0, 0, 0) => "menos de 1 s".into(),
+        (0, 0, s) => format!("{s} s"),
+        (0, m, 0) => format!("{m} min"),
+        (0, m, s) => format!("{m} min {s} s"),
+        (h, 0, _) => format!("{h} h"),
+        (h, m, _) => format!("{h} h {m} min"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -50,6 +65,15 @@ mod tests {
         for (n, esperado) in casos {
             assert_eq!(bytes(n), esperado, "n = {n}");
         }
+    }
+
+    #[test]
+    fn duration_formats() {
+        use std::time::Duration;
+        assert_eq!(duration(Duration::from_millis(300)), "menos de 1 s");
+        assert_eq!(duration(Duration::from_secs(5)), "5 s");
+        assert_eq!(duration(Duration::from_secs(161)), "2 min 41 s");
+        assert_eq!(duration(Duration::from_secs(3720)), "1 h 2 min");
     }
 
     #[test]

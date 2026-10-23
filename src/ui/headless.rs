@@ -58,4 +58,34 @@ mod tests {
         assert_eq!(pixel(&min, 880, 30, 400), s1);
         assert_eq!(pixel(&min, 880, 150, 400), bg);
     }
+
+    /// Un clic en la casilla escribe en el modelo y avisa con su índice; Rust decide.
+    #[test]
+    fn la_casilla_escribe_en_el_modelo_y_avisa() {
+        use crate::ui::{CatState, CategoryRow, CleanData, CleanPhase};
+        use slint::platform::PointerEventButton;
+        use slint::{LogicalPosition, Model, VecModel};
+        use std::cell::Cell;
+
+        init();
+        let app = AppWindow::new().unwrap();
+        app.set_section(1);
+        let data = app.global::<CleanData>();
+        let row = CategoryRow { name: "Temporales".into(), state: CatState::Ready, checked: true, ..Default::default() };
+        let rows = Rc::new(VecModel::from(vec![row.clone(), row]));
+        data.set_rows(rows.clone().into());
+        data.set_phase(CleanPhase::Ready);
+        let toggled = Rc::new(Cell::new(-1));
+        let t = toggled.clone();
+        data.on_toggled(move |i| t.set(i));
+        render(app.window(), 1100, 720);
+        // Casilla de la segunda fila: 216 + 32 + 16 + 9, 96 + 57 + 28.
+        let position = LogicalPosition::new(273.0, 181.0);
+        let button = PointerEventButton::Left;
+        app.window().dispatch_event(WindowEvent::PointerPressed { position, button });
+        app.window().dispatch_event(WindowEvent::PointerReleased { position, button });
+        assert_eq!(toggled.get(), 1);
+        assert!(!rows.row_data(1).unwrap().checked);
+        assert!(rows.row_data(0).unwrap().checked);
+    }
 }

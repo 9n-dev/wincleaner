@@ -1,0 +1,338 @@
+// Sección Limpiar: calculando → lista → limpiando → informe. Todo llega por `CleanData`.
+import { Palette, Type, Icon } from "../theme.slint";
+import { Button, ButtonKind, Check, Pill, Note, Bar, Tone } from "../widgets.slint";
+
+export enum CleanPhase { calculating, ready, cleaning, report }
+export enum CatState { ready, calculating, admin, missing, unrecognized }
+
+export struct CategoryRow {
+    name: string,
+    desc: string,
+    size: string,
+    files: string,
+    state: CatState,
+    checked: bool,
+}
+
+export struct ReportRow { name: string, freed: string, skipped: string }
+
+export global CleanData {
+    in property <CleanPhase> phase;
+    // La casilla escribe `checked` en el modelo y avisa con `toggled`; Rust decide.
+    in-out property <[CategoryRow]> rows;
+    // Total de lo marcado, p. ej. "3,0 GB".
+    in property <string> total;
+    in property <bool> can-clean;
+    // Categoría en curso, «1,7 GB de 3,0 GB» y «N archivos borrados · M en uso, se saltan».
+    in property <string> progress-name;
+    in property <string> progress-text;
+    in property <string> progress-detail;
+    // 0..1
+    in property <float> progress;
+    // «Has liberado 2,6 GB.» y la frase de los saltados (vacía si no hay).
+    in property <string> report-title;
+    in property <string> report-text;
+    in property <[ReportRow]> report;
+    callback toggled(int);
+    callback review();
+    callback recalc();
+}
+
+component Head {
+    in property <string> title;
+    in property <string> text;
+
+    HorizontalLayout {
+        spacing: 16px;
+
+        VerticalLayout {
+            alignment: end;
+            spacing: 2px;
+
+            Text {
+                text: root.title;
+                color: Palette.tx;
+                font-size: Type.title;
+                font-weight: 600;
+            }
+            Text {
+                text: root.text;
+                color: Palette.mu;
+            }
+        }
+        Rectangle { horizontal-stretch: 1; }
+        VerticalLayout {
+            alignment: end;
+            @children
+        }
+    }
+}
+
+// Fondo y borde de las listas. El borde va encima, para que nada lo tape.
+component ListBox inherits Rectangle {
+    background: Palette.s1;
+    border-radius: 12px;
+
+    VerticalLayout {
+        @children
+    }
+    Rectangle {
+        border-radius: 12px;
+        border-width: 1px;
+        border-color: Palette.line;
+    }
+}
+
+component CatItem {
+    in property <CategoryRow> item;
+    in-out property <bool> checked;
+    in property <bool> first;
+    in property <bool> locked;
+    callback toggled();
+    property <bool> off: root.item.state == CatState.admin || root.item.state == CatState.missing
+        || root.item.state == CatState.unrecognized;
+
+    if !root.first: Rectangle {
+        y: 0;
+        height: 1px;
+        background: Palette.line;
+    }
+
+    Rectangle {
+        opacity: root.off ? 0.45 : 1;
+
+        HorizontalLayout {
+            padding-left: 16px;
+            padding-right: 16px;
+            padding-top: 11px;
+            padding-bottom: 11px;
+            spacing: 14px;
+
+            VerticalLayout {
+                alignment: center;
+                Check {
+                    checked <=> root.checked;
+                    enabled: !root.off && !root.locked;
+                    accessible-label: root.item.name;
+                    toggled => { root.toggled(); }
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                horizontal-stretch: 1;
+
+                Text {
+                    text: root.item.name;
+                    color: Palette.tx;
+                    font-weight: 500;
+                    overflow: elide;
+                }
+                Text {
+                    text: root.item.desc;
+                    color: Palette.fa;
+                    font-size: Type.label;
+                    overflow: elide;
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+
+                if root.item.state == CatState.ready: VerticalLayout {
+                    Text {
+                        text: root.item.size;
+                        color: Palette.tx;
+                        font-weight: 600;
+                        horizontal-alignment: right;
+                    }
+                    Text {
+                        text: root.item.files;
+                        color: Palette.fa;
+                        font-size: Type.label;
+                        horizontal-alignment: right;
+                    }
+                }
+                if root.item.state == CatState.calculating: Text {
+                    text: "Calculando…";
+                    color: Palette.fa;
+                }
+                if root.item.state == CatState.admin: Pill {
+                    icon: "lock";
+                    text: "Necesita administrador";
+                }
+                if root.item.state == CatState.missing: Pill {
+                    text: "No encontrado";
+                }
+                if root.item.state == CatState.unrecognized: Pill {
+                    kind: Tone.warn;
+                    text: "Ruta no reconocida";
+                }
+            }
+        }
+    }
+}
+
+// Las dos columnas de números del informe.
+component ReportLine inherits Rectangle {
+    in property <string> name;
+    in property <string> freed;
+    in property <string> skipped;
+    in property <bool> header;
+    in property <bool> first;
+    background: root.header ? Palette.bg : transparent;
+
+    if !root.first: Rectangle {
+        y: 0;
+        height: 1px;
+        background: Palette.line;
+    }
+
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        padding-top: root.header ? 9px : 11px;
+        padding-bottom: root.header ? 9px : 11px;
+        spacing: 14px;
+
+        Text {
+            text: root.name;
+            color: root.header ? Palette.fa : Palette.tx;
+            font-size: root.header ? 11.5px : Type.body;
+            font-weight: root.header ? 400 : 500;
+            letter-spacing: root.header ? 0.6px : 0;
+            horizontal-stretch: 1;
+            overflow: elide;
+        }
+        Text {
+            width: 120px;
+            text: root.freed;
+            color: root.header ? Palette.fa : Palette.tx;
+            font-size: root.header ? 11.5px : Type.body;
+            font-weight: root.header ? 400 : 600;
+            letter-spacing: root.header ? 0.6px : 0;
+            horizontal-alignment: right;
+        }
+        Text {
+            width: 180px;
+            text: root.skipped;
+            color: Palette.fa;
+            font-size: root.header ? 11.5px : Type.body;
+            letter-spacing: root.header ? 0.6px : 0;
+            horizontal-alignment: right;
+            overflow: elide;
+        }
+    }
+}
+
+export component CleanPage inherits Rectangle {
+    in property <bool> compact;
+    property <CleanPhase> phase: CleanData.phase;
+    property <bool> cleaning: root.phase == CleanPhase.cleaning;
+
+    Flickable {
+        width: parent.width;
+        height: parent.height;
+        content-width: self.width;
+        content-height: body.preferred-height;
+
+        body := VerticalLayout {
+            width: parent.width;
+            padding-top: root.compact ? 20px : 28px;
+            padding-bottom: root.compact ? 20px : 28px;
+            padding-left: root.compact ? 20px : 32px;
+            padding-right: root.compact ? 20px : 32px;
+            spacing: 18px;
+            alignment: start;
+
+            Head {
+                title: root.cleaning ? "Limpiando…" : root.phase == CleanPhase.report ? "Listo" : "Limpiar";
+                text: root.cleaning ? "No cierres WinCleaner hasta que termine."
+                    : root.phase == CleanPhase.report ? "Limpieza terminada hace un momento."
+                    : root.phase == CleanPhase.calculating ? "Calculando cuánto ocupa cada categoría…"
+                    : "Marca lo que quieras borrar. Solo se tocan estas carpetas.";
+
+                if root.phase == CleanPhase.calculating || root.phase == CleanPhase.ready: Button {
+                    text: root.phase == CleanPhase.calculating ? "Revisar y limpiar" : "Revisar y limpiar · " + CleanData.total;
+                    icon: "broom";
+                    kind: ButtonKind.primary;
+                    enabled: CleanData.can-clean;
+                    clicked => { CleanData.review(); }
+                }
+                if root.phase == CleanPhase.report: Button {
+                    text: "Volver a calcular";
+                    icon: "refresh";
+                    clicked => { CleanData.recalc(); }
+                }
+            }
+
+            if root.cleaning: Rectangle {
+                background: Palette.s1;
+                border-width: 1px;
+                border-color: Palette.line;
+                border-radius: 12px;
+
+                VerticalLayout {
+                    padding: 26px;
+                    spacing: 10px;
+
+                    HorizontalLayout {
+                        Text {
+                            text: CleanData.progress-name;
+                            color: Palette.tx;
+                            font-weight: 600;
+                            horizontal-stretch: 1;
+                            overflow: elide;
+                        }
+                        Text {
+                            text: CleanData.progress-text;
+                            color: Palette.mu;
+                        }
+                    }
+                    Bar {
+                        height: 8px;
+                        value: CleanData.progress;
+                    }
+                    Text {
+                        text: CleanData.progress-detail;
+                        color: Palette.mu;
+                        font-size: Type.label;
+                    }
+                }
+            }
+
+            if root.phase == CleanPhase.report: Note {
+                kind: Tone.ok;
+                icon: "check";
+                title: CleanData.report-title;
+                text: CleanData.report-text;
+            }
+
+            if root.phase == CleanPhase.report: ListBox {
+                ReportLine {
+                    header: true;
+                    first: true;
+                    name: "CATEGORÍA";
+                    freed: "LIBERADO";
+                    skipped: "SALTADOS";
+                }
+                for r in CleanData.report: ReportLine {
+                    name: r.name;
+                    freed: r.freed;
+                    skipped: r.skipped;
+                }
+            }
+
+            // Mientras se limpia, la lista queda atenuada y sin tocar.
+            if root.phase != CleanPhase.report: ListBox {
+                opacity: root.cleaning ? 0.4 : 1;
+
+                for row[i] in CleanData.rows: CatItem {
+                    item: row;
+                    checked <=> row.checked;
+                    first: i == 0;
+                    locked: root.cleaning;
+                    toggled => { CleanData.toggled(i); }
+                }
+            }
+        }
+    }
+}
