@@ -262,7 +262,7 @@ impl Programs {
         let data = app.global::<ProgramsData>();
         data.set_banner(0);
         data.set_banner_title(format!("Esperando al desinstalador de {}…", p.name).into());
-        data.set_banner_text("Termina en su ventana. La lista se actualizará cuando se cierre.".into());
+        data.set_banner_text(WAIT_TEXT.into());
         data.set_selected(-1);
         data.set_phase(1);
         let k = self.clone();
@@ -278,9 +278,11 @@ impl Programs {
         let done = STATE.with_borrow_mut(|st| {
             let w = st.waiting.as_ref()?;
             let present = win::reg::key_exists(w.hive, &format!("{}\\{}", win::reg::UNINSTALL, w.key));
-            let alive = uninstall::alive(&w.launched);
-            let state = programs::wait_state(present, alive, w.launched.is_job(), w.user_done);
+            let state = programs::wait_state(present, w.user_done);
             if state == WaitState::Waiting {
+                // El seguimiento del proceso solo cambia la ayuda: no cierra la espera.
+                let text = if uninstall::alive(&w.launched) { WAIT_TEXT } else { WAIT_GONE_TEXT };
+                app.global::<ProgramsData>().set_banner_text(text.into());
                 return None;
             }
             st.timer.stop();
@@ -299,6 +301,10 @@ impl Programs {
         app.global::<SummaryData>().invoke_refresh();
     }
 }
+
+const WAIT_TEXT: &str = "Termina en su ventana. La lista se actualizará cuando se cierre.";
+/// Ya no queda ningún proceso seguido, pero el desinstalador puede seguir (si se elevó solo).
+const WAIT_GONE_TEXT: &str = "Si ya has cerrado el desinstalador, pulsa «Ya he terminado».";
 
 fn banner(app: &AppWindow, kind: i32, title: &str, text: &str) {
     let data = app.global::<ProgramsData>();

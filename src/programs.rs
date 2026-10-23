@@ -88,6 +88,10 @@ pub fn uninstall_command(e: &RawEntry, system32: &str) -> Result<UninstallCmd, U
         return msi_guid(&args).map_or(Err(UninstallError::BadPath), |g| msi(&g));
     }
     let exe = resolve(&exe, system32).ok_or(UninstallError::BadPath)?;
+    // Solo `.exe`: CreateProcess con un script (.bat, .cmd…) lo pasa por cmd.exe sin que se vea.
+    if !exe.to_ascii_lowercase().ends_with(".exe") {
+        return Err(UninstallError::BadPath);
+    }
     Ok(UninstallCmd { exe, args })
 }
 
@@ -178,12 +182,13 @@ pub enum WaitState {
     StillThere,
 }
 
-/// Espera tras lanzar el desinstalador. Con `runas` (sin job) que termine el proceso no
-/// cierra la espera: NSIS se copia a Temp y sigue.
-pub fn wait_state(key_present: bool, tracked_alive: bool, tracked_is_job: bool, user_done: bool) -> WaitState {
+/// Espera tras lanzar el desinstalador. Solo la cierra la clave que desaparece o «Ya he
+/// terminado»: que no quede ningún proceso seguido no basta, porque hay desinstaladores que
+/// se elevan solos (el `unins000` de Inno) y se salen del job, y NSIS se copia a Temp.
+pub fn wait_state(key_present: bool, user_done: bool) -> WaitState {
     if !key_present {
         WaitState::Removed
-    } else if user_done || (tracked_is_job && !tracked_alive) {
+    } else if user_done {
         WaitState::StillThere
     } else {
         WaitState::Waiting
@@ -251,6 +256,18 @@ mod tests {
     }
 
     #[test]
+    fn uninstall_rejects_scripts() {
+        for cmd in ["C:\\a\\u.bat /S", "\"C:\\a\\u.cmd\"", "C:\\a\\u.com", "C:\\a\\u.ps1", "C:\\a\\u", "C:\\a\\u.exe.bat", "cmd"] {
+            let e = RawEntry { uninstall_string: Some(cmd.into()), ..raw() };
+            assert_eq!(uninstall_command(&e, S), Err(UninstallError::BadPath), "{cmd}");
+        }
+        let e = RawEntry { uninstall_string: Some("\"C:\\a\\Unins000.EXE\" /S".into()), ..raw() };
+        assert_eq!(uninstall_command(&e, S).unwrap().exe, "C:\\a\\Unins000.EXE");
+        let e = RawEntry { uninstall_string: Some("rundll32.exe x.dll,Uninstall".into()), ..raw() };
+        assert_eq!(uninstall_command(&e, S).unwrap().exe, "C:\\Windows\\System32\\rundll32.exe");
+    }
+
+    #[test]
     fn hidden_entries() {
         assert!(visible(&raw()));
         assert!(!visible(&RawEntry { display_name: None, ..raw() }));
@@ -289,19 +306,20 @@ mod tests {
     }
 
     #[test]
-    fn wait_runas_ignores_process_exit() {
-        assert_eq!(wait_state(true, false, false, false), WaitState::Waiting);
-    }
-
-    #[test]
-    fn wait_job_empty_finishes() {
-        assert_eq!(wait_state(true, false, true, false), WaitState::StillThere);
+    fn wait_job_empty_keeps_waiting() {
+        // El job vacío (o el proceso terminado) ni siquiera entra: con la clave, se espera.
+        assert_eq!(wait_state(true, false), WaitState::Waiting);
     }
 
     #[test]
     fn wait_key_gone() {
-        assert_eq!(wait_state(false, true, true, false), WaitState::Removed);
-        assert_eq!(wait_state(true, true, false, true), WaitState::StillThere);
+        assert_eq!(wait_state(false, false), WaitState::Removed);
+        assert_eq!(wait_state(false, true), WaitState::Removed);
+    }
+
+    #[test]
+    fn wait_user_done_with_key() {
+        assert_eq!(wait_state(true, true), WaitState::StillThere);
     }
 
     #[test]

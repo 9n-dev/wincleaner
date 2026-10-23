@@ -36,16 +36,11 @@ impl Drop for Handle {
 }
 
 /// El desinstalador lanzado. Con job se siguen también los procesos que lance él (NSIS se
-/// copia a Temp y sigue desde ahí); con `runas` no hay job.
+/// copia a Temp y sigue desde ahí); con `runas` no hay job. Solo cambia la ayuda de la
+/// espera: la cierran la clave o «Ya he terminado» (R12).
 pub struct Launched {
     process: Handle,
     job: Option<Handle>,
-}
-
-impl Launched {
-    pub fn is_job(&self) -> bool {
-        self.job.is_some()
-    }
 }
 
 #[derive(Debug)]
