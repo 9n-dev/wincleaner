@@ -69,6 +69,8 @@ cargo test
 cargo build --release --target x86_64-pc-windows-gnu
 ```
 
+El proyecto vendoriza `i-slint-backend-winit` en `vendor/` (sin los decodificadores de imagen de Slint, para ahorrar ~700 KB); ver `vendor/i-slint-backend-winit/PARCHE.md`.
+
 El resultado queda en `target/x86_64-pc-windows-gnu/release/wincleaner.exe`.
 
 En Windows necesitas Rust 1.87 o posterior (edición 2024) y el compilador de recursos que usa `embed-resource`: `rc.exe` del Windows SDK con la toolchain MSVC, o `windres` de mingw con la GNU. Después basta con `cargo build --release`.
