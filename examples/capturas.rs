@@ -52,6 +52,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         guarda(&format!("wcv2-inicio{suffix}"), &headless::render(app.window(), w, h), w, h)?;
     }
 
+    // «Acerca de», sobre el Resumen.
+    app.set_version(env!("CARGO_PKG_VERSION").into());
+    app.set_about_open(true);
+    guarda("wcv2-acerca", &headless::render(app.window(), 1100, 720), 1100, 720)?;
+    app.set_about_open(false);
+
     // Limpiar, con los datos de `CATS` de las maquetas.
     use wincleaner::ui::{CatState, CategoryRow, CleanData, CleanPhase, ReportRow};
     fn model<T: Clone + 'static>(v: Vec<T>) -> slint::ModelRc<T> {

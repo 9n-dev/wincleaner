@@ -15,6 +15,8 @@ use crate::win;
 pub fn run() {
     let Ok(app) = AppWindow::new() else { return };
     app.set_admin(win::is_admin());
+    app.set_version(env!("CARGO_PKG_VERSION").into());
+    app.global::<Nav>().on_open_slint(|| win::open_url("https://slint.dev"));
     ui::install_modal(&app);
     // Un solo manejador para toda la ventana (Slint no admite más): mientras una sección
     // tiene `locked` (p. ej. limpiando), la ventana no se cierra.

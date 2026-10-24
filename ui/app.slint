@@ -1,5 +1,5 @@
 import { Palette, Type, Icon } from "theme.slint";
-import { ConfirmModal, Modal, ModalLine } from "widgets.slint";
+import { Button, ConfirmModal, Modal, ModalLine } from "widgets.slint";
 import { SummaryPage, SummaryData, DriveRow } from "pages/summary.slint";
 import { AnalyzePage, AnalyzeData, DirRow } from "pages/analyze.slint";
 import { ProgramsPage, ProgramsData, ProgramRow } from "pages/programs.slint";
@@ -13,6 +13,86 @@ export { Modal, ModalLine, CleanData, CleanPhase, CatState, CategoryRow, ReportR
 export global Nav {
     in property <int> security-badge;
     callback relaunch-admin();
+    callback open-slint();
+}
+
+// «Acerca de»: modal informativo. Esc y Intro lo cierran. Sin imágenes (R11, R15): todo texto.
+component AboutModal inherits Rectangle {
+    in property <string> version;
+    callback close();
+    FocusScope {
+        init => { ok.focus(); }
+        key-pressed(e) => {
+            if (e.text == Key.Escape || e.text == Key.Return) {
+                root.close();
+                return accept;
+            }
+            return reject;
+        }
+
+        Rectangle {
+            background: #0a0e11.with-alpha(0.6);
+            TouchArea { }
+        }
+
+        Rectangle {
+            width: min(380px, parent.width * 0.9);
+            height: box.preferred-height + 44px;
+            background: Palette.s1;
+            border-width: 1px;
+            border-color: Palette.line2;
+            border-radius: 14px;
+            accessible-role: groupbox;
+            accessible-label: "Acerca de WinCleaner";
+
+            box := VerticalLayout {
+                padding: 22px;
+                spacing: 8px;
+
+                Text {
+                    text: "WinCleaner " + root.version;
+                    color: Palette.tx;
+                    font-size: 18px;
+                    font-weight: 600;
+                }
+                Text {
+                    text: "Licencia MIT · Hecho por @9n-dev";
+                    color: Palette.mu;
+                }
+                Text {
+                    text: "Hecho con Slint (licencia Royalty-free 2.0)";
+                    color: Palette.mu;
+                    wrap: word-wrap;
+                }
+                Rectangle {
+                    height: 20px;
+                    accessible-role: button;
+                    accessible-label: "Abrir slint.dev";
+                    accessible-action-default => { Nav.open-slint(); }
+                    Text {
+                        text: "slint.dev";
+                        x: 0;
+                        width: parent.width;
+                        color: Palette.ac2;
+                        vertical-alignment: center;
+                        horizontal-alignment: left;
+                    }
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { Nav.open-slint(); }
+                    }
+                }
+                HorizontalLayout {
+                    padding-top: 10px;
+                    alignment: end;
+                    ok := Button {
+                        text: "Cerrar";
+                        clicked => { root.close(); }
+                    }
+                }
+            }
+        }
+    }
 }
 
 component NavItem {
@@ -132,6 +212,8 @@ component AdminButton {
 
 export component AppWindow inherits Window {
     in property <bool> admin;
+    in property <string> version;
+    in-out property <bool> about-open;
     // Mientras se limpia, no se cambia de sección.
     in property <bool> locked;
     // 0 Resumen, 1 Limpiar, 2 Analizar, 3 Programas, 4 Procesos, 5 Seguridad.
@@ -175,33 +257,47 @@ export component AppWindow inherits Window {
             padding-right: root.compact ? 9px : 13px;
             spacing: 2px;
 
-            HorizontalLayout {
-                padding-top: 2px;
-                padding-bottom: 20px;
-                padding-left: root.compact ? 0 : 10px;
-                spacing: 10px;
-                alignment: root.compact ? center : start;
+            Rectangle {
+                height: 46px;
+                accessible-role: button;
+                accessible-label: "Acerca de WinCleaner";
+                accessible-enabled: !root.locked;
+                accessible-action-default => { if (!root.locked) { root.about-open = true; } }
 
-                Rectangle {
-                    width: 24px;
-                    height: 24px;
-                    border-radius: 7px;
-                    background: Palette.ac;
+                HorizontalLayout {
+                    padding-top: 2px;
+                    padding-bottom: 20px;
+                    padding-left: root.compact ? 0 : 10px;
+                    spacing: 10px;
+                    alignment: root.compact ? center : start;
 
-                    Icon {
-                        name: "broom";
-                        size: 15px;
-                        stroke-width: 2.2px;
-                        color: Palette.on;
+                    Rectangle {
+                        width: 24px;
+                        height: 24px;
+                        border-radius: 7px;
+                        background: Palette.ac;
+
+                        Icon {
+                            name: "broom";
+                            size: 15px;
+                            stroke-width: 2.2px;
+                            color: Palette.on;
+                        }
+                    }
+
+                    if !root.compact: Text {
+                        text: "WinCleaner";
+                        color: Palette.tx;
+                        font-size: 15px;
+                        font-weight: 600;
+                        vertical-alignment: center;
                     }
                 }
 
-                if !root.compact: Text {
-                    text: "WinCleaner";
-                    color: Palette.tx;
-                    font-size: 15px;
-                    font-weight: 600;
-                    vertical-alignment: center;
+                TouchArea {
+                    enabled: !root.locked;
+                    mouse-cursor: pointer;
+                    clicked => { root.about-open = true; }
                 }
             }
 
@@ -341,5 +437,14 @@ export component AppWindow inherits Window {
         y: 0;
         width: root.width;
         height: root.height;
+    }
+
+    if root.about-open: AboutModal {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        version: root.version;
+        close => { root.about-open = false; }
     }
 }
