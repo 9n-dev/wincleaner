@@ -1,0 +1,425 @@
+// Sección Seguridad: Microsoft Defender y las comprobaciones de WinCleaner. Todo llega por
+// `SecurityData`.
+import { Palette, Type, Icon } from "../theme.slint";
+import { Button, ButtonKind, Card, Note, Pill, Bar, Spinner, Tone } from "../widgets.slint";
+import { Head, ListBox } from "clean.slint";
+
+export enum SecPhase { idle, scanning, clean, findings }
+
+export struct CheckRow {
+    name: string,
+    // 0 pendiente, 1 en curso, 2 hecho, 3 no se pudo revisar.
+    state: int,
+}
+
+export struct FindingRow {
+    // 0 amenaza, 1 sospechoso, 2 revisar.
+    level: int,
+    title: string,
+    path: string,
+    why: string,
+    // Textos de los botones; `action(hallazgo, acción)` lleva el índice de aquí.
+    actions: [string],
+}
+
+export global SecurityData {
+    in property <SecPhase> phase;
+    // 0 Defender, 1 otro antivirus, 2 ninguno, 3 no se ha podido saber; -1 mientras se comprueba.
+    in property <int> av: -1;
+    // Con `av` 3: está MpCmdRun, así que se puede analizar con Defender igualmente.
+    in property <bool> scan-anyway;
+    // Con Defender, «Firmas de hace 2 días»; con otro antivirus, su nombre.
+    in property <string> av-text;
+    // Subtítulo durante el análisis y después: «Análisis rápido en curso · 2 min 5 s».
+    in property <string> header;
+    in property <[CheckRow]> checks;
+    in property <[FindingRow]> findings;
+    // Aviso de encima de los hallazgos (o, si no hay, de un fallo de Defender).
+    in property <string> banner-title;
+    in property <string> banner-text;
+    // El aviso va en rojo (amenazas o sospechosos) o en ámbar.
+    in property <bool> banner-bad;
+    // Texto de «No se ha encontrado nada raro».
+    in property <string> clean-text;
+    // Algo no se pudo revisar (una comprobación o el análisis de Defender): sin escudo verde.
+    in property <bool> incomplete;
+    // Defender pidió permisos de administrador para analizar.
+    in property <bool> needs-admin;
+    // Hay un análisis de Defender en marcha (no solo las comprobaciones): se puede cancelar.
+    in property <bool> defender-running;
+    callback quick();
+    callback full();
+    callback checks-only();
+    callback cancel();
+    // «Analizar otra vez»: lo mismo que la última vez.
+    callback again();
+    callback open-security();
+    callback action(int, int);
+}
+
+component Label inherits Text {
+    color: Palette.fa;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.7px;
+}
+
+component Disclaimer inherits Text {
+    text: "WinCleaner no es un antivirus: la búsqueda de virus la hace Microsoft Defender, que viene con Windows. WinCleaner solo señala cosas raras; no borra nada por su cuenta.";
+    color: Palette.fa;
+    font-size: Type.label;
+    wrap: word-wrap;
+}
+
+// Una comprobación. Sin `live`, como lista de lo que se revisa (icono de información).
+component CheckLine {
+    in property <CheckRow> item;
+    in property <bool> live;
+    property <bool> done: root.live && root.item.state == 2;
+    accessible-role: text;
+    accessible-label: root.item.name + (!root.live ? "" : root.item.state == 2 ? ", hecho" : root.item.state == 1 ? ", en curso"
+        : root.item.state == 3 ? ", no se pudo revisar" : ", pendiente");
+
+    HorizontalLayout {
+        padding-top: 5px;
+        padding-bottom: 5px;
+        spacing: 10px;
+
+        VerticalLayout {
+            alignment: center;
+            if root.live && root.item.state == 1: Spinner { }
+            if root.done: Icon {
+                name: "check";
+                color: Palette.ac;
+            }
+            if root.live && root.item.state == 3: Icon {
+                name: "warn";
+                color: Palette.warn;
+            }
+            if !root.live || root.item.state == 0: Icon {
+                name: "info";
+                color: Palette.fa;
+            }
+        }
+        Text {
+            text: root.item.name;
+            color: root.done ? Palette.tx : Palette.mu;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+    }
+}
+
+component ChecksCard inherits Card {
+    in property <string> title;
+    in property <bool> live;
+    Label { text: root.title; }
+    VerticalLayout {
+        for c in SecurityData.checks: CheckLine {
+            item: c;
+            live: root.live;
+        }
+    }
+    @children
+}
+
+component DefenderCard inherits Card {
+    Label { text: "MICROSOFT DEFENDER"; }
+    HorizontalLayout {
+        spacing: 10px;
+        alignment: start;
+        if SecurityData.av == 0: VerticalLayout {
+            alignment: center;
+            Pill {
+                kind: Tone.ok;
+                icon: "check";
+                text: "Activo";
+            }
+        }
+        Text {
+            text: SecurityData.av == 0 ? SecurityData.av-text : SecurityData.av == 3 ? "No se sabe si está activo" : "Comprobando Defender…";
+            color: Palette.mu;
+            vertical-alignment: center;
+        }
+    }
+    HorizontalLayout {
+        padding-top: 4px;
+        spacing: 8px;
+        alignment: start;
+        Button {
+            text: "Análisis rápido";
+            icon: "shield";
+            kind: ButtonKind.primary;
+            // Fuera de inicio la tarjeta está oculta: sus botones no hacen nada.
+            enabled: (SecurityData.av == 0 || SecurityData.av == 3) && SecurityData.phase == SecPhase.idle;
+            clicked => { SecurityData.quick(); }
+        }
+        Button {
+            text: "Análisis completo";
+            // Fuera de inicio la tarjeta está oculta: sus botones no hacen nada.
+            enabled: (SecurityData.av == 0 || SecurityData.av == 3) && SecurityData.phase == SecPhase.idle;
+            clicked => { SecurityData.full(); }
+        }
+    }
+    Text {
+        text: "El rápido tarda unos minutos; el completo, horas.";
+        color: Palette.fa;
+        font-size: Type.label;
+        wrap: word-wrap;
+    }
+}
+
+component FindingItem {
+    in property <FindingRow> item;
+    in property <int> index;
+    in property <bool> first;
+
+    if !root.first: Rectangle {
+        y: 0;
+        height: 1px;
+        background: Palette.line;
+    }
+
+    HorizontalLayout {
+        padding: 16px;
+        spacing: 14px;
+
+        VerticalLayout {
+            alignment: start;
+            padding-top: 2px;
+            Pill {
+                kind: root.item.level == 2 ? Tone.warn : Tone.bad;
+                text: root.item.level == 0 ? "Amenaza" : root.item.level == 1 ? "Sospechoso" : "Revisar";
+            }
+        }
+        VerticalLayout {
+            spacing: 2px;
+            horizontal-stretch: 1;
+
+            Text {
+                text: root.item.title;
+                color: Palette.tx;
+                font-weight: 600;
+                wrap: word-wrap;
+            }
+            if root.item.path != "": Text {
+                text: root.item.path;
+                color: Palette.mu;
+                font-family: Type.mono;
+                font-size: Type.label;
+                overflow: elide;
+            }
+            Text {
+                text: root.item.why;
+                color: Palette.mu;
+                font-size: Type.label;
+                wrap: word-wrap;
+            }
+            if root.item.actions.length > 0: HorizontalLayout {
+                padding-top: 12px;
+                spacing: 8px;
+                alignment: start;
+                for a[j] in root.item.actions: Button {
+                    text: a;
+                    icon: a == "Abrir ubicación" ? "folder" : a == "Buscar en internet" ? "search"
+                        : a == "Ver el archivo" || a == "Abrir Seguridad de Windows" ? "ext" : "";
+                    clicked => { SecurityData.action(root.index, j); }
+                }
+            }
+        }
+    }
+}
+
+export component SecurityPage inherits Rectangle {
+    in property <bool> compact;
+    // «Reiniciar como admin.» del aviso (lo conecta la ventana con `Nav`).
+    callback relaunch-admin();
+    property <SecPhase> phase: SecurityData.phase;
+    property <bool> idle: root.phase == SecPhase.idle;
+    property <bool> scanning: root.phase == SecPhase.scanning;
+    property <bool> unknown: SecurityData.av == 3;
+    property <bool> defender: SecurityData.av <= 0 || (root.unknown && SecurityData.scan-anyway);
+    // Inicio con Defender: su tarjeta y la de las comprobaciones, lado a lado (una encima de
+    // otra si la ventana es estrecha).
+    property <bool> two: root.idle && root.defender;
+    property <bool> side: root.two && !root.compact;
+    // Ancho de la zona de contenido y media columna (fijos, como en el Resumen: sin bucle).
+    property <length> inner: root.width - (root.compact ? 40px : 64px);
+    property <length> half: (root.inner - 14px) / 2;
+    // El botón del encabezado: «Cancelar» o «Analizar otra vez».
+    property <bool> stop: root.scanning && SecurityData.defender-running;
+
+    Flickable {
+        width: parent.width;
+        height: parent.height;
+        content-width: self.width;
+        content-height: body.preferred-height;
+
+        body := VerticalLayout {
+            width: parent.width;
+            padding-top: root.compact ? 20px : 28px;
+            padding-bottom: root.compact ? 20px : 28px;
+            padding-left: root.compact ? 20px : 32px;
+            padding-right: root.compact ? 20px : 32px;
+            spacing: 18px;
+            alignment: start;
+
+            Head {
+                title: "Seguridad";
+                text: !root.idle ? SecurityData.header
+                    : root.defender ? "Busca virus con Microsoft Defender y revisa cosas raras del sistema."
+                    : "Busca virus y revisa cosas raras del sistema.";
+
+                if root.stop || root.phase == SecPhase.clean || root.phase == SecPhase.findings: Button {
+                    text: root.stop ? "Cancelar" : "Analizar otra vez";
+                    icon: root.stop ? "stop" : "refresh";
+                    clicked => {
+                        if (root.stop) { SecurityData.cancel(); } else { SecurityData.again(); }
+                    }
+                }
+            }
+
+            if root.idle && root.unknown: Note {
+                kind: Tone.info;
+                title: "No se pudo saber qué antivirus tienes.";
+                text: SecurityData.scan-anyway
+                    ? "Puedes analizar con Microsoft Defender igualmente. Las comprobaciones de WinCleaner sí funcionan."
+                    : "Las comprobaciones de WinCleaner sí funcionan.";
+            }
+            if root.idle && (SecurityData.av == 1 || SecurityData.av == 2): Note {
+                kind: SecurityData.av == 1 ? Tone.warn : Tone.bad;
+                title: SecurityData.av == 1 ? "Microsoft Defender no está disponible."
+                    : "Microsoft Defender no está disponible y no hay otro antivirus activo.";
+                text: SecurityData.av == 1
+                    ? "Usas otro antivirus (" + SecurityData.av-text + "): busca virus desde ese programa. Las comprobaciones de WinCleaner sí funcionan."
+                    : "Las comprobaciones de WinCleaner sí funcionan.";
+                if SecurityData.av == 2: Button {
+                    text: root.compact ? "" : "Abrir Seguridad de Windows";
+                    icon: "ext";
+                    accessible-label: "Abrir Seguridad de Windows";
+                    clicked => { SecurityData.open-security(); }
+                }
+            }
+            if root.phase == SecPhase.findings || (root.phase == SecPhase.clean && SecurityData.banner-title != ""): Note {
+                kind: SecurityData.banner-bad ? Tone.bad : Tone.warn;
+                icon: "warn";
+                title: SecurityData.banner-title;
+                text: SecurityData.banner-text;
+            }
+            if !root.scanning && SecurityData.needs-admin: Note {
+                kind: Tone.warn;
+                title: "Defender necesita permisos de administrador para analizar.";
+                text: "Las comprobaciones de WinCleaner se han hecho igual.";
+                Button {
+                    text: root.compact ? "" : "Reiniciar como admin.";
+                    icon: "shield";
+                    accessible-label: "Reiniciar como administrador";
+                    clicked => { root.relaunch-admin(); }
+                }
+            }
+
+            if root.scanning && SecurityData.defender-running: Card {
+                HorizontalLayout {
+                    spacing: 12px;
+                    Text {
+                        text: "Microsoft Defender está analizando…";
+                        color: Palette.tx;
+                        font-weight: 600;
+                        horizontal-stretch: 1;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: "Puedes seguir usando el equipo";
+                        color: Palette.mu;
+                    }
+                }
+                Bar { indeterminate: true; }
+            }
+
+            // Una sola tarjeta de Defender y una de comprobaciones, colocadas a mano: así no
+            // se repiten en cada estado.
+            if root.idle || root.scanning: Rectangle {
+                property <length> gap: 14px;
+                height: !root.two ? checks.preferred-height
+                    : root.side ? max(def.preferred-height, checks.preferred-height)
+                    : def.preferred-height + self.gap + checks.preferred-height;
+
+                def := DefenderCard {
+                    visible: root.two;
+                    x: 0;
+                    y: 0;
+                    width: root.side ? root.half : root.inner;
+                    height: root.side ? parent.height : self.preferred-height;
+                }
+                checks := ChecksCard {
+                    x: root.side ? root.half + parent.gap : 0;
+                    y: root.two && !root.side ? def.preferred-height + parent.gap : 0;
+                    width: root.side ? root.half : root.inner;
+                    height: root.side ? parent.height : self.preferred-height;
+                    title: root.two ? "ADEMÁS SE REVISA" : "COMPROBACIONES DE WINCLEANER";
+                    live: root.scanning;
+
+                    if root.idle && (!root.defender || root.unknown): HorizontalLayout {
+                        padding-top: 4px;
+                        alignment: start;
+                        Button {
+                            text: "Revisar cosas raras";
+                            icon: "search";
+                            kind: ButtonKind.primary;
+                            clicked => { SecurityData.checks-only(); }
+                        }
+                    }
+                }
+            }
+
+            if root.phase == SecPhase.clean: Rectangle {
+                background: Palette.s1;
+                border-width: 1px;
+                border-color: Palette.line;
+                border-radius: 12px;
+
+                VerticalLayout {
+                    padding: 40px;
+                    spacing: 2px;
+
+                    HorizontalLayout {
+                        alignment: center;
+                        padding-bottom: 8px;
+                        Icon {
+                            name: SecurityData.incomplete ? "shield" : "shieldok";
+                            size: 48px;
+                            stroke-width: 1.4px;
+                            color: SecurityData.incomplete ? Palette.warn : Palette.ac;
+                        }
+                    }
+                    Text {
+                        text: SecurityData.incomplete
+                            ? "No se ha encontrado nada raro en lo que se pudo revisar"
+                            : "No se ha encontrado nada raro";
+                        color: Palette.tx;
+                        font-size: 20px;
+                        font-weight: 600;
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                    }
+                    Text {
+                        text: SecurityData.clean-text;
+                        color: Palette.mu;
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+
+            if root.phase == SecPhase.findings: ListBox {
+                for f[i] in SecurityData.findings: FindingItem {
+                    item: f;
+                    index: i;
+                    first: i == 0;
+                }
+            }
+
+            if !root.scanning: Disclaimer { }
+        }
+    }
+}

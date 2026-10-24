@@ -1,0 +1,48 @@
+//! Ventana principal: crea `AppWindow`, conecta la barra lateral y monta las secciones.
+
+mod analyze;
+mod clean;
+mod procs;
+mod programs;
+mod security;
+mod summary;
+
+use slint::{CloseRequestResponse, ComponentHandle};
+use wincleaner::ui::{self, AppWindow, Nav};
+
+use crate::win;
+
+pub fn run() {
+    let Ok(app) = AppWindow::new() else { return };
+    app.set_admin(win::is_admin());
+    app.set_version(env!("CARGO_PKG_VERSION").into());
+    app.global::<Nav>().on_open_slint(|| win::open_url("https://slint.dev"));
+    ui::install_modal(&app);
+    // Un solo manejador para toda la ventana (Slint no admite más): mientras una sección
+    // tiene `locked` (p. ej. limpiando), la ventana no se cierra.
+    let weak = app.as_weak();
+    app.window().on_close_requested(move || {
+        if weak.upgrade().is_some_and(|a| a.get_locked()) {
+            CloseRequestResponse::KeepWindowShown
+        } else {
+            CloseRequestResponse::HideWindow
+        }
+    });
+    // Si se cancela el aviso de UAC, la ventana sigue abierta. Mientras se limpia, no
+    // se reinicia (la acción de accesibilidad no mira `enabled`).
+    let weak = app.as_weak();
+    app.global::<Nav>().on_relaunch_admin(move || {
+        if weak.upgrade().is_some_and(|a| !a.get_locked()) && win::relaunch_as_admin() {
+            let _ = slint::quit_event_loop();
+        }
+    });
+    summary::init(&app);
+    let _clean = clean::Clean::new(&app);
+    analyze::Analyze::new(&app);
+    programs::Programs::new(&app);
+    procs::Procs::new(&app);
+    security::Security::new(&app);
+    let _ = app.run();
+    // Un análisis de Defender en marcha no se queda suelto al cerrar o al reiniciar como admin.
+    security::shutdown();
+}

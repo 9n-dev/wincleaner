@@ -1,0 +1,77 @@
+// Tema DeLorean: paleta, tipografía e iconos de las maquetas. Solo hay tema oscuro.
+
+export global Palette {
+    out property <color> bg: #171e23;
+    out property <color> s1: #1c242a;
+    out property <color> s2: #222b31;
+    out property <color> line: #2c373f;
+    out property <color> line2: #3a4750;
+    out property <color> tx: #e0dde0;
+    out property <color> mu: #9ba6ad;
+    out property <color> fa: #7d8b93;
+    out property <color> ac: #a9c2b8;
+    out property <color> ac2: #8fc2c0;
+    out property <color> warn: #d6b38a;
+    out property <color> bad: #d68a8a;
+    out property <color> info: #8fb0c4;
+    out property <color> on: #171e23;
+}
+
+// Si la familia no está (Windows 10), Slint usa la del sistema, Segoe UI.
+export global Type {
+    out property <string> family: "Segoe UI Variable Text";
+    // Rutas y carpetas. Si falta, Slint usa la fuente del sistema.
+    out property <string> mono: "Consolas";
+    out property <length> body: 13px;
+    out property <length> title: 22px;
+    out property <length> label: 12px;
+}
+
+// Trazos de `const I` de las maquetas (caja de 24×24). Los `rect` y `circle` van como arcos.
+// El trazo queda centrado en el espacio que le den, también dentro de un layout.
+export component Icon {
+    in property <string> name;
+    in property <brush> color: Palette.tx;
+    in property <length> size: 16px;
+    in property <length> stroke-width: 1.8px;
+    min-width: root.size;
+    min-height: root.size;
+    preferred-width: root.size;
+    preferred-height: root.size;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+
+    Path {
+        width: root.size;
+        height: root.size;
+        viewbox-x: 0;
+        viewbox-y: 0;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        fill: transparent;
+        stroke: root.color;
+        stroke-width: root.stroke-width;
+        stroke-line-cap: round;
+        stroke-line-join: round;
+        commands:
+            root.name == "home" ? "M3 11l9-7 9 7M5 10v10h14V10"
+            : root.name == "broom" ? "M14 4l6 6M17 7l-6 6M11 13c-3-1-6 1-7 7 6-1 8-4 7-7z"
+            : root.name == "chart" ? "M4 20V10M10 20V4M16 20v-7M21 20H3"
+            : root.name == "apps" ? "M5.5 4h4a1.5 1.5 0 0 1 1.5 1.5v4a1.5 1.5 0 0 1 -1.5 1.5h-4a1.5 1.5 0 0 1 -1.5 -1.5v-4a1.5 1.5 0 0 1 1.5 -1.5zM14.5 4h4a1.5 1.5 0 0 1 1.5 1.5v4a1.5 1.5 0 0 1 -1.5 1.5h-4a1.5 1.5 0 0 1 -1.5 -1.5v-4a1.5 1.5 0 0 1 1.5 -1.5zM5.5 13h4a1.5 1.5 0 0 1 1.5 1.5v4a1.5 1.5 0 0 1 -1.5 1.5h-4a1.5 1.5 0 0 1 -1.5 -1.5v-4a1.5 1.5 0 0 1 1.5 -1.5zM14.5 13h4a1.5 1.5 0 0 1 1.5 1.5v4a1.5 1.5 0 0 1 -1.5 1.5h-4a1.5 1.5 0 0 1 -1.5 -1.5v-4a1.5 1.5 0 0 1 1.5 -1.5z"
+            : root.name == "pulse" ? "M3 12h4l3-7 4 14 3-7h4"
+            : root.name == "shield" ? "M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"
+            : root.name == "shieldok" ? "M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6zM9 12l2 2 4-4"
+            : root.name == "check" ? "M5 12l5 5 9-10"
+            : root.name == "lock" ? "M7 11h10a2 2 0 0 1 2 2v5a2 2 0 0 1 -2 2h-10a2 2 0 0 1 -2 -2v-5a2 2 0 0 1 2 -2zM8 11V8a4 4 0 0 1 8 0v3"
+            : root.name == "folder" ? "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"
+            : root.name == "search" ? "M5 11a6 6 0 1 0 12 0a6 6 0 1 0 -12 0M20 20l-4.5-4.5"
+            : root.name == "warn" ? "M12 4l9 16H3zM12 10v4M12 17v.5"
+            : root.name == "info" ? "M3 12a9 9 0 1 0 18 0a9 9 0 1 0 -18 0M12 11v5M12 8v.5"
+            : root.name == "x" ? "M6 6l12 12M18 6L6 18"
+            : root.name == "drive" ? "M5 7h14a2 2 0 0 1 2 2v6a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-6a2 2 0 0 1 2 -2zM7 12h.5"
+            : root.name == "stop" ? "M8 6h8a2 2 0 0 1 2 2v8a2 2 0 0 1 -2 2h-8a2 2 0 0 1 -2 -2v-8a2 2 0 0 1 2 -2z"
+            : root.name == "ext" ? "M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"
+            : root.name == "refresh" ? "M20 11a8 8 0 1 0-2 6M20 5v6h-6"
+            : "";
+    }
+}

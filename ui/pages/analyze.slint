@@ -1,0 +1,255 @@
+// Sección Analizar: vacío → analizando → resultados. Todo llega por `AnalyzeData`.
+import { Palette, Type, Icon } from "../theme.slint";
+import { Button, ButtonKind, Seg, Bar, EmptyState } from "../widgets.slint";
+import { Head, ListBox } from "clean.slint";
+
+export struct DirRow {
+    path: string,
+    size: string,
+    // Respecto a la primera fila: 0..1.
+    share: float,
+}
+
+export global AnalyzeData {
+    // «C: · 64 GB libres»
+    in property <[string]> drives;
+    in-out property <int> drive;
+    // 0 vacío, 1 analizando, 2 resultados.
+    in property <int> phase;
+    // «Analizando C:…»
+    in property <string> title;
+    // «412 803 archivos · 1 min 12 s»
+    in property <string> progress;
+    // Carpeta que se está leyendo.
+    in property <string> current;
+    // «Analizados 1 284 112 archivos en 2 min 41 s.»
+    in property <string> summary;
+    // 0 carpetas, 1 archivos.
+    in-out property <int> kind;
+    in property <[DirRow]> rows;
+    in-out property <int> selected: -1;
+    callback start-stop();
+    callback open(int);
+    // El `Seg` ya escribió `kind`; Rust cambia las filas.
+    callback kind-changed();
+}
+
+component DirItem {
+    in property <int> index;
+    in property <DirRow> item;
+    in property <bool> selected;
+    in property <bool> first;
+    callback select();
+    callback open();
+    min-height: 52px;
+    accessible-role: list-item;
+    accessible-label: root.item.path + ", " + root.item.size;
+    accessible-action-default => { root.select(); }
+
+    Rectangle {
+        background: root.selected ? Palette.s2 : touch.has-hover ? Palette.s2.with-alpha(0.5) : transparent;
+    }
+    if !root.first: Rectangle {
+        y: 0;
+        height: 1px;
+        background: Palette.line;
+    }
+    // Marca de la fila elegida.
+    if root.selected: Rectangle {
+        x: 0;
+        width: 3px;
+        background: Palette.ac;
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.select(); }
+        double-clicked => { root.open(); }
+    }
+
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        padding-top: 10px;
+        padding-bottom: 10px;
+        spacing: 12px;
+
+        Text {
+            width: 26px;
+            text: root.index + 1;
+            color: Palette.fa;
+            vertical-alignment: center;
+        }
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            spacing: 5px;
+
+            Text {
+                text: root.item.path;
+                color: Palette.tx;
+                font-family: Type.mono;
+                font-size: Type.label;
+                overflow: elide;
+            }
+            // Barra relativa a la primera fila.
+            Rectangle {
+                height: 4px;
+                border-radius: 2px;
+                background: Palette.s2;
+                clip: true;
+
+                Rectangle {
+                    x: 0;
+                    height: parent.height;
+                    width: parent.width * Math.min(Math.max(root.item.share, 0), 1);
+                    border-radius: 2px;
+                    background: Palette.ac;
+                    opacity: 0.7;
+                }
+            }
+        }
+        Text {
+            width: 90px;
+            text: root.item.size;
+            color: Palette.tx;
+            font-weight: 600;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+        }
+        if root.selected: Button {
+            text: "Abrir ubicación";
+            icon: "folder";
+            clicked => { root.open(); }
+        }
+    }
+}
+
+export component AnalyzePage inherits Rectangle {
+    in property <bool> compact;
+    property <int> phase: AnalyzeData.phase;
+
+    Flickable {
+        width: parent.width;
+        height: parent.height;
+        content-width: self.width;
+        content-height: body.preferred-height;
+
+        body := VerticalLayout {
+            width: parent.width;
+            padding-top: root.compact ? 20px : 28px;
+            padding-bottom: root.compact ? 20px : 28px;
+            padding-left: root.compact ? 20px : 32px;
+            padding-right: root.compact ? 20px : 32px;
+            spacing: 18px;
+            alignment: start;
+
+            Head {
+                title: "Analizar";
+                text: root.phase == 2 ? AnalyzeData.summary : "Encuentra las carpetas y los archivos que más ocupan.";
+            }
+
+            HorizontalLayout {
+                spacing: 10px;
+
+                // Durante el análisis la unidad no se cambia.
+                Rectangle {
+                    horizontal-stretch: 0;
+                    opacity: root.phase == 1 ? 0.5 : 1;
+
+                    Seg {
+                        width: parent.width;
+                        height: parent.height;
+                        items: AnalyzeData.drives;
+                        current <=> AnalyzeData.drive;
+                    }
+                    if root.phase == 1: TouchArea { }
+                }
+                Button {
+                    text: root.phase == 1 ? "Detener" : root.phase == 2 ? "Volver a analizar" : "Analizar";
+                    icon: root.phase == 1 ? "stop" : root.phase == 2 ? "refresh" : "search";
+                    kind: root.phase == 0 ? ButtonKind.primary : ButtonKind.secondary;
+                    enabled: root.phase == 1 || AnalyzeData.drives.length > 0;
+                    clicked => { AnalyzeData.start-stop(); }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                if root.phase == 2: Seg {
+                    items: ["Carpetas", "Archivos"];
+                    current <=> AnalyzeData.kind;
+                    selected => { AnalyzeData.kind-changed(); }
+                }
+            }
+
+            if root.phase == 0: EmptyState {
+                height: 220px;
+                icon: "chart";
+                title: AnalyzeData.drives.length > 0 ? "Elige una unidad y pulsa Analizar" : "No hay unidades";
+                text: AnalyzeData.drives.length > 0
+                    ? "En un disco grande tarda unos minutos. Puedes detenerlo cuando quieras."
+                    : "WinCleaner no ha encontrado ningún disco fijo.";
+            }
+
+            if root.phase == 1: Rectangle {
+                background: Palette.s1;
+                border-width: 1px;
+                border-color: Palette.line;
+                border-radius: 12px;
+
+                VerticalLayout {
+                    padding: 18px;
+                    spacing: 10px;
+
+                    HorizontalLayout {
+                        spacing: 12px;
+
+                        Text {
+                            text: AnalyzeData.title;
+                            color: Palette.tx;
+                            font-weight: 600;
+                            horizontal-stretch: 1;
+                            overflow: elide;
+                        }
+                        Text {
+                            text: AnalyzeData.progress;
+                            color: Palette.mu;
+                        }
+                    }
+                    Bar {
+                        height: 6px;
+                        indeterminate: true;
+                    }
+                    Text {
+                        text: AnalyzeData.current;
+                        color: Palette.fa;
+                        font-family: Type.mono;
+                        font-size: Type.label;
+                        overflow: elide;
+                    }
+                }
+            }
+            if root.phase == 1: Text {
+                text: "Los resultados aparecerán al terminar.";
+                color: Palette.fa;
+                font-size: Type.label;
+                horizontal-alignment: center;
+            }
+
+            if root.phase == 2 && AnalyzeData.rows.length == 0: EmptyState {
+                height: 160px;
+                icon: "chart";
+                title: "No se ha encontrado nada";
+                text: "Esta unidad no tiene archivos que se puedan leer.";
+            }
+            if root.phase == 2 && AnalyzeData.rows.length > 0: ListBox {
+                for row[i] in AnalyzeData.rows: DirItem {
+                    index: i;
+                    item: row;
+                    first: i == 0;
+                    selected: AnalyzeData.selected == i;
+                    select => { AnalyzeData.selected = i; }
+                    open => { AnalyzeData.open(i); }
+                }
+            }
+        }
+    }
+}
