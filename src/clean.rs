@@ -112,18 +112,26 @@ pub fn delete(cat: &Category, scan: &ScanResult, now: SystemTime) -> DeleteRepor
 }
 
 /// Borra `target` (archivo o carpeta) con todo lo que tenga dentro, por el mismo camino que
-/// `delete`: la raíz es la carpeta padre y no hay filtro de antigüedad. Los enlaces no se
-/// siguen ni se borran: cuentan como saltados, y la carpeta que los contiene se queda.
-/// Si `target` ya no existe, no hay nada que hacer.
+/// `delete` y sin filtro de antigüedad. Lo de dentro se borra con `target` como raíz (si una
+/// carpeta se cambia por un enlace a otra de al lado, se sale de la raíz y se salta); solo el
+/// propio `target` usa como raíz su carpeta padre. Los enlaces no se siguen ni se borran:
+/// cuentan como saltados, y la carpeta que los contiene se queda. Si `target` ya no existe,
+/// no hay nada que hacer.
 pub fn purge(target: &Path) -> DeleteReport {
+    let (rep, files, dirs) = purge_walk(target);
+    purge_apply(target, rep, &files, &dirs)
+}
+
+type Walk = (DeleteReport, Vec<(PathBuf, u64)>, Vec<PathBuf>);
+
+/// Lo que hay que borrar, sin seguir enlaces: archivos y carpetas (de la más profunda a la
+/// menos, con `target` al final).
+fn purge_walk(target: &Path) -> Walk {
     let mut rep = DeleteReport::default();
-    let Some(parent) = target.parent() else { return rep };
-    let roots = [parent.to_path_buf()];
-    let now = SystemTime::now();
     let mut files = Vec::new();
     let mut dirs = Vec::new();
     match std::fs::symlink_metadata(target) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return rep,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (rep, files, dirs),
         Err(_) => rep.skipped += 1,
         Ok(md) if is_link(&md) => rep.skipped += 1,
         Ok(md) if md.is_dir() => dirs.push(target.to_path_buf()),
@@ -154,13 +162,23 @@ pub fn purge(target: &Path) -> DeleteReport {
         }
     }
     dirs.sort_by_key(|d| std::cmp::Reverse(d.components().count()));
+    (rep, files, dirs)
+}
+
+fn purge_apply(target: &Path, mut rep: DeleteReport, files: &[(PathBuf, u64)], dirs: &[PathBuf]) -> DeleteReport {
+    let Some(parent) = target.parent() else { return rep };
+    let inner = [target.to_path_buf()];
+    let outer = [parent.to_path_buf()];
+    // `final_roots` descarta un `target` que ya sea un enlace: entonces no se borra nada dentro.
     #[cfg(windows)]
-    let finals = handle::final_roots(&roots);
-    for (path, size) in &files {
+    let (inner_finals, outer_finals) = (handle::final_roots(&inner), handle::final_roots(&outer));
+    let now = SystemTime::now();
+    for (path, size) in files {
+        let roots: &[PathBuf] = if path == target { &outer } else { &inner };
         #[cfg(windows)]
-        let freed = handle::try_delete(&roots, Filter::All, path, now, &finals);
+        let freed = handle::try_delete(roots, Filter::All, path, now, if path == target { &outer_finals } else { &inner_finals });
         #[cfg(not(windows))]
-        let freed = try_delete(&roots, Filter::All, path, now);
+        let freed = try_delete(roots, Filter::All, path, now);
         match freed {
             Ok(Some(n)) => {
                 rep.freed += n;
@@ -173,11 +191,12 @@ pub fn purge(target: &Path) -> DeleteReport {
             }
         }
     }
-    for dir in &dirs {
+    for dir in dirs {
+        let roots: &[PathBuf] = if dir == target { &outer } else { &inner };
         #[cfg(windows)]
-        handle::remove_dir(dir, &roots, &finals);
+        handle::remove_dir(dir, roots, if dir == target { &outer_finals } else { &inner_finals });
         #[cfg(not(windows))]
-        remove_dir(dir, &roots);
+        remove_dir(dir, roots);
     }
     rep
 }
@@ -661,5 +680,27 @@ mod tests {
         let rep = purge(&t);
         assert_eq!(rep.deleted, 1);
         assert!(!t.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn purge_swapped_subdir_stays_inside() {
+        let base = temp_dir("purge_swapped");
+        let (t, otra) = (base.join("carpeta"), base.join("otra"));
+        write(&t.join("sub/g"), 5);
+        write(&otra.join("g"), 5);
+        let (rep, files, dirs) = purge_walk(&t);
+        fs::remove_dir_all(t.join("sub")).unwrap();
+        std::os::unix::fs::symlink("../otra", t.join("sub")).unwrap();
+        let rep = purge_apply(&t, rep, &files, &dirs);
+        assert!(otra.join("g").exists());
+        assert_eq!((rep.deleted, rep.skipped, rep.skipped_bytes), (0, 1, 5));
+        assert!(t.exists());
+        // En Linux lo de arriba ya lo para `no_link_ancestors`. En Windows el handle sigue el
+        // junction y la ruta final cae en `otra/g`, dentro del padre: con esa ruta, lo de
+        // dentro tiene que quedarse fuera de la raíz `target`.
+        let rep = purge_apply(&t, DeleteReport::default(), &[(otra.join("g"), 5)], &[]);
+        assert!(otra.join("g").exists());
+        assert_eq!((rep.deleted, rep.skipped), (0, 1));
     }
 }
