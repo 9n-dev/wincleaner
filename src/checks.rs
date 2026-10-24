@@ -259,6 +259,66 @@ pub fn search_url(file_name: &str) -> String {
     s
 }
 
+/// Ordena por nivel (amenazas primero) y junta en uno los hallazgos del mismo archivo (el de
+/// nivel más alto), con las acciones de todos en el orden de los botones. Como todas hablan del
+/// mismo archivo, de cada clase de acción queda la primera.
+pub fn merge(mut v: Vec<Finding>) -> Vec<Finding> {
+    fn rank(a: &Action) -> u8 {
+        match a {
+            Action::DisableStartup(_) => 0,
+            Action::Kill(_) => 1,
+            Action::OpenLocation(_) => 2,
+            Action::Search(_) => 3,
+            Action::OpenHosts => 4,
+            Action::OpenWindowsSecurity => 5,
+        }
+    }
+    v.sort_by_key(|f| f.level as u8);
+    let mut out: Vec<Finding> = Vec::new();
+    for f in v {
+        let same = out.iter_mut().find(|o| !f.path.is_empty() && o.path.eq_ignore_ascii_case(&f.path));
+        match same {
+            Some(o) => {
+                for a in f.actions {
+                    if !o.actions.iter().any(|b| rank(b) == rank(&a)) {
+                        o.actions.push(a);
+                    }
+                }
+            }
+            None => out.push(f),
+        }
+    }
+    for f in &mut out {
+        f.actions.sort_by_key(rank);
+    }
+    out
+}
+
+/// El aviso de encima de los hallazgos: título y texto, según cuántos son amenazas de Defender
+/// y cuántos avisos de WinCleaner.
+pub fn summary(threats: usize, others: usize) -> (String, String) {
+    let title = match threats + others {
+        1 => "Hay 1 cosa que revisar.".to_string(),
+        n => format!("Hay {n} cosas que revisar."),
+    };
+    let text = match (threats, others) {
+        (0, 1) => "Es un aviso de WinCleaner: puede que sea algo que instalaste tú.".to_string(),
+        (0, _) => "Son avisos de WinCleaner: puede que sean cosas que instalaste tú.".to_string(),
+        (1, 0) => "La ha encontrado Defender.".to_string(),
+        (_, 0) => "Las ha encontrado Defender.".to_string(),
+        (t, o) => {
+            let a = if t == 1 { "Una la ha encontrado Defender.".to_string() } else { format!("{t} las ha encontrado Defender.") };
+            let b = if o == 1 {
+                "La otra es un aviso de WinCleaner: puede que sea algo que instalaste tú."
+            } else {
+                "Las otras son avisos de WinCleaner: puede que sean cosas que instalaste tú."
+            };
+            format!("{a} {b}")
+        }
+    };
+    (title, text)
+}
+
 /// Las únicas URL que WinCleaner abre: `https://…` y `windowsdefender:…`, sin comillas, espacios
 /// ni caracteres de control (nada que ShellExecute pueda leer como otro argumento).
 pub fn openable_url(url: &str) -> bool {
@@ -400,6 +460,41 @@ mod tests {
         assert_eq!(search_url("juego crack.exe"), "https://www.bing.com/search?q=juego%20crack.exe");
         assert_eq!(search_url("C:\\Users\\ana\\x.exe"), "https://www.bing.com/search?q=x.exe");
         assert_eq!(search_url("ñ"), "https://www.bing.com/search?q=%C3%B1");
+    }
+
+    #[test]
+    fn merge_joins_same_file_and_sorts() {
+        let p = places();
+        let e = r"C:\Users\a\AppData\Local\Temp\x7f2\updater.exe";
+        let hosts = hosts_finding(&[("0.0.0.0".into(), "x".into())]).unwrap();
+        let start = startup_finding(3, "updater", Some(e), true, false, &p).unwrap();
+        let proc = process_finding(&e.to_uppercase(), false, &p).unwrap();
+        let v = merge(vec![hosts, start, proc]);
+        assert_eq!(v.len(), 2);
+        assert_eq!((v[0].level, v[0].title.as_str()), (Level::Suspicious, "updater"));
+        assert_eq!(
+            v[0].actions,
+            vec![
+                Action::DisableStartup(3),
+                Action::Kill(e.to_uppercase()),
+                Action::OpenLocation(e.into()),
+                Action::Search("UPDATER.EXE".into()),
+            ]
+        );
+        assert_eq!(v[1].level, Level::Review);
+    }
+
+    #[test]
+    fn summary_texts() {
+        assert_eq!(summary(0, 1).0, "Hay 1 cosa que revisar.");
+        assert_eq!(
+            summary(1, 2),
+            (
+                "Hay 3 cosas que revisar.".into(),
+                "Una la ha encontrado Defender. Las otras son avisos de WinCleaner: puede que sean cosas que instalaste tú.".into()
+            )
+        );
+        assert_eq!(summary(2, 0).1, "Las ha encontrado Defender.");
     }
 
     #[test]

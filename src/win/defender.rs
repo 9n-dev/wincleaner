@@ -1,6 +1,5 @@
 //! Microsoft Defender en Windows: estado y amenazas por WMI, otros antivirus del Centro de
 //! seguridad y análisis con `MpCmdRun.exe`, buscado solo en sus rutas absolutas conocidas.
-#![expect(dead_code, reason = "lo usa la Task 14")]
 
 use std::collections::HashMap;
 use std::io::{self, Read};

@@ -325,6 +325,82 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         guarda(&format!("wcv2-procesos-inicio{suffix}"), &headless::render(app.window(), w, h), w, h)?;
     }
     data.set_tab(0);
+
+    // Seguridad, con los datos de `CHECKS` y `seguridad*()` de las maquetas.
+    use wincleaner::ui::{CheckRow, FindingRow, Nav, SecPhase, SecurityData};
+    let data = app.global::<SecurityData>();
+    let checks = |done: i32| {
+        let names = [
+            "Programas que arrancan con Windows",
+            "Procesos en ejecución",
+            "Servicios que no son de Microsoft",
+            "Archivo hosts",
+            "Proxy del sistema",
+            "Copias falsas de procesos de Windows",
+        ];
+        let rows = names.iter().enumerate().map(|(i, n)| CheckRow { name: (*n).into(), state: if (i as i32) < done { 2 } else { 1 } });
+        model(rows.collect::<Vec<_>>())
+    };
+    let finding = |level, title: &str, path: &str, why: &str, actions: &[&str]| FindingRow {
+        level,
+        title: title.into(),
+        path: path.into(),
+        why: why.into(),
+        actions: model(actions.iter().map(|a| slint::SharedString::from(*a)).collect()),
+    };
+    data.set_findings(model(vec![
+        finding(
+            0,
+            "Defender ha encontrado Trojan:Win32/Wacatac.B!ml",
+            "C:\\Users\\ana\\Downloads\\juego_crack.exe",
+            "Defender ya la ha puesto en cuarentena. Desde Seguridad de Windows puedes eliminarla o restaurarla.",
+            &["Abrir Seguridad de Windows"],
+        ),
+        finding(
+            1,
+            "updater.exe arranca con Windows desde una carpeta temporal",
+            "C:\\Users\\ana\\AppData\\Local\\Temp\\x7f2\\updater.exe · sin firma",
+            "Los programas legítimos casi nunca arrancan desde Temp.",
+            &["Desactivar inicio", "Terminar proceso", "Abrir ubicación", "Buscar en internet"],
+        ),
+        finding(
+            2,
+            "El archivo hosts tiene 2 entradas añadidas",
+            "0.0.0.0 ads.ejemplo.com · 0.0.0.0 tracker.ejemplo.net",
+            "Puede ser un bloqueador de anuncios que instalaste tú.",
+            &["Ver el archivo"],
+        ),
+    ]));
+    data.set_av_text("Firmas de hace 2 días".into());
+    data.set_clean_text("Defender no ha detectado amenazas y las 6 comprobaciones están bien.".into());
+    data.set_banner_text(
+        "Una la ha encontrado Defender. Las otras son avisos de WinCleaner: puede que sean cosas que instalaste tú.".into(),
+    );
+    data.set_banner_bad(true);
+    app.set_section(5);
+    for (nombre, phase, av, header, done, badge) in [
+        ("seguridad", SecPhase::Idle, 0, "", 0, 0),
+        ("seguridad-analizando", SecPhase::Scanning, 0, "Análisis rápido en curso · 2 min 5 s", 4, 0),
+        ("seguridad-limpio", SecPhase::Clean, 0, "Último análisis: hoy, 18:42 · rápido", 6, 0),
+        ("seguridad-hallazgos", SecPhase::Findings, 0, "Último análisis: hoy, 18:42 · rápido", 6, 3),
+        ("seguridad-sin-defender", SecPhase::Idle, 1, "", 0, 0),
+    ] {
+        data.set_phase(phase);
+        data.set_av(av);
+        if av == 1 {
+            data.set_av_text("Avast Free Antivirus".into());
+        }
+        data.set_header(header.into());
+        data.set_checks(checks(done));
+        data.set_defender_running(phase == SecPhase::Scanning);
+        // En «limpio», el aviso solo sale si Defender ha fallado.
+        data.set_banner_title(if badge > 0 { "Hay 3 cosas que revisar." } else { "" }.into());
+        app.global::<Nav>().set_security_badge(badge);
+        for (suffix, w, h) in [("", 1100, 720), ("-min", 880, 600)] {
+            guarda(&format!("wcv2-{nombre}{suffix}"), &headless::render(app.window(), w, h), w, h)?;
+        }
+    }
+    app.global::<Nav>().set_security_badge(0);
     app.set_section(0);
 
     // Todos los componentes, con el modal abierto encima.

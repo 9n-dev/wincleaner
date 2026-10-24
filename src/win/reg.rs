@@ -146,12 +146,10 @@ pub fn expand_env(s: &str) -> String {
     expand(&w).unwrap_or_else(|| s.to_string())
 }
 
-#[expect(dead_code, reason = "API de la capa; de momento basta con `uninstall_entries`")]
 pub fn read_str(hive: Hive, path: &str, name: &str) -> Option<String> {
     Key::open(hive, path, KEY_READ).ok()?.str(name)
 }
 
-#[expect(dead_code, reason = "API de la capa; de momento basta con `uninstall_entries`")]
 pub fn read_dword(hive: Hive, path: &str, name: &str) -> Option<u32> {
     Key::open(hive, path, KEY_READ).ok()?.dword(name)
 }

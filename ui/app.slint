@@ -4,9 +4,10 @@ import { SummaryPage, SummaryData, DriveRow } from "pages/summary.slint";
 import { AnalyzePage, AnalyzeData, DirRow } from "pages/analyze.slint";
 import { ProgramsPage, ProgramsData, ProgramRow } from "pages/programs.slint";
 import { ProcsPage, ProcsData, ProcRow, StartRow } from "pages/procs.slint";
+import { SecurityPage, SecurityData, SecPhase, CheckRow, FindingRow } from "pages/security.slint";
 import { CleanPage, CleanData, CleanPhase, CatState, CategoryRow, ReportRow } from "pages/clean.slint";
 
-export { Modal, ModalLine, CleanData, CleanPhase, CatState, CategoryRow, ReportRow, AnalyzeData, DirRow, SummaryData, DriveRow, ProgramsData, ProgramRow, ProcsData, ProcRow, StartRow }
+export { Modal, ModalLine, CleanData, CleanPhase, CatState, CategoryRow, ReportRow, AnalyzeData, DirRow, SummaryData, DriveRow, ProgramsData, ProgramRow, ProcsData, ProcRow, StartRow, SecurityData, SecPhase, CheckRow, FindingRow }
 
 // Estado de la barra lateral que rellena Rust.
 export global Nav {
@@ -321,6 +322,12 @@ export component AppWindow inherits Window {
             compact: root.compact;
         }
         if root.section == 4: ProcsPage {
+            width: parent.width;
+            height: parent.height;
+            compact: root.compact;
+            relaunch-admin => { Nav.relaunch-admin(); }
+        }
+        if root.section == 5: SecurityPage {
             width: parent.width;
             height: parent.height;
             compact: root.compact;

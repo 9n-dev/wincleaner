@@ -12,13 +12,14 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use slint::{Color, ComponentHandle, Image, Model, Rgba8Pixel, SharedPixelBuffer, Timer, TimerMode, VecModel, Weak};
+use wincleaner::checks::Places;
 use wincleaner::format;
 use wincleaner::paths;
 use wincleaner::procs::{self, Group};
 use wincleaner::startup;
 use wincleaner::ui::{AppWindow, Confirm, ProcRow, ProcsData, StartRow, confirm};
 
-use super::{programs, summary};
+use super::{programs, security, summary};
 use crate::win;
 use crate::win::proc::TermError;
 use crate::win::startup::Item;
@@ -32,6 +33,8 @@ struct Meta {
     name: String,
     sub: String,
     icon: Icon,
+    /// Pastilla «Revisar»: lo señalan las comprobaciones de seguridad.
+    review: bool,
 }
 
 /// Una vuelta del hilo de trabajo. Sin `full` (la del Resumen), `groups` y `metas` van vacíos.
@@ -93,17 +96,19 @@ fn sub(sig: &Signature, exe: &str, temp: Option<&str>) -> String {
 }
 
 /// Nombre, firma e icono del grupo, con caché por ruta. Va en el hilo de trabajo (con COM).
-fn meta(g: &Group, temp: Option<&str>) -> Meta {
+fn meta(g: &Group, temp: Option<&str>, places: &Places) -> Meta {
     let Some(exe) = g.exe.as_deref().filter(|e| !e.is_empty()) else {
-        return Meta { name: g.name.clone(), sub: String::new(), icon: None };
+        return Meta { name: g.name.clone(), sub: String::new(), icon: None, review: false };
     };
     if let Some(m) = METAS.lock().ok().and_then(|c| c.as_ref()?.get(&g.key).cloned()) {
         return m;
     }
+    let sig = trust::check_cached(exe);
     let m = Meta {
         name: win::proc::description(exe).unwrap_or_else(|| g.name.clone()),
-        sub: sub(&trust::check_cached(exe), exe, temp),
+        sub: sub(&sig, exe, temp),
         icon: win::icon::load(exe, 0),
+        review: security::process_review(exe, &sig, places),
     };
     if let Ok(mut c) = METAS.lock() {
         c.get_or_insert_with(HashMap::new).insert(g.key.clone(), m.clone());
@@ -140,13 +145,16 @@ pub struct Procs {
     app: Weak<AppWindow>,
     system_root: String,
     temp: Option<String>,
+    /// Carpetas de las comprobaciones de seguridad, para las pastillas «Revisar».
+    places: Places,
 }
 
 impl Procs {
     pub fn new(app: &AppWindow) -> Procs {
         let temp = std::env::var_os("TEMP").map(|t| win::long_path(Path::new(&t)).to_string_lossy().into_owned());
         // Sin la carpeta de Windows, todo queda bloqueado (`procs::blocked` falla cerrado).
-        let c = Procs { app: app.as_weak(), system_root: win::windows_dir().unwrap_or_default(), temp };
+        let places = win::security_places();
+        let c = Procs { app: app.as_weak(), system_root: win::windows_dir().unwrap_or_default(), temp, places };
         let data = app.global::<ProcsData>();
         data.set_rows(STATE.with_borrow(|st| st.model.clone()).into());
         data.set_starts(STATE.with_borrow(|st| st.starts_model.clone()).into());
@@ -218,7 +226,7 @@ impl Procs {
                     g.blocked = true;
                 }
                 // SHGetFileInfoW (el icono de reserva) necesita COM en este hilo.
-                metas = win::with_com(|| groups.iter().map(|g| meta(g, k.temp.as_deref())).collect());
+                metas = win::with_com(|| groups.iter().map(|g| meta(g, k.temp.as_deref(), &k.places)).collect());
             }
             let snap = Snap { full, groups, metas, cpu, sys, count };
             let _ = k.app.clone().upgrade_in_event_loop(move |app| k.loaded(&app, snap));
@@ -275,8 +283,7 @@ impl Procs {
                         letter: letter(&m.name).into(),
                         tint: if g.blocked { GREY } else { programs::tint(&m.name) },
                         blocked: g.blocked,
-                        // La regla llega con las comprobaciones de seguridad.
-                        review: false,
+                        review: m.review,
                     }
                 })
                 .collect();
@@ -304,55 +311,27 @@ impl Procs {
         }) else {
             return;
         };
-        let text = if n == 1 {
-            format!("Se cerrará. Lo que no hayas guardado en {name} se perderá.")
-        } else {
-            format!("Se cerrarán sus {n} procesos. Lo que no hayas guardado en {name} se perderá.")
-        };
         let k = self.clone();
-        let ask = Confirm {
-            title: &format!("¿Terminar {name}?"),
-            text: &text,
-            lines: Vec::new(),
-            note: "",
-            confirm_text: "Terminar",
-            danger: true,
-        };
-        confirm(&app, ask, move || k.kill(&key, name));
+        let shown = name.clone();
+        ask_kill(&app, key, n, &name, self.system_root.clone(), move |app, r| k.killed(app, shown, r));
     }
 
-    /// Ya confirmado: vuelve a buscar el grupo en la última vuelta (con sus PID de ahora) y
-    /// comprueba otra vez que no es de Windows. `terminate` mira cada PID justo antes.
-    fn kill(&self, key: &str, name: String) {
-        let found = STATE.with_borrow(|st| {
-            let g = st.groups.iter().find(|g| g.key == key)?;
-            let exe = g.exe.clone().filter(|e| !g.blocked && !procs::blocked(Some(e), false, &self.system_root))?;
-            Some((g.pids.clone(), exe))
-        });
-        // Ya no está (o se ha vuelto intocable): basta con refrescar.
-        let Some((pids, exe)) = found else { return self.refresh(true) };
-        let k = self.clone();
-        std::thread::spawn(move || {
-            let r = win::proc::terminate(&pids, &exe);
-            let _ = k.app.clone().upgrade_in_event_loop(move |app| {
-                let data = app.global::<ProcsData>();
-                data.set_selected(-1);
-                match r {
-                    Ok(()) => data.set_denied(false),
-                    Err(e) => {
-                        let text = match e {
-                            TermError::Denied if !app.get_admin() => String::new(),
-                            TermError::Denied => "Windows ha denegado el acceso. Puede que sea un proceso protegido.".into(),
-                            TermError::Other(c) => format!("Windows devolvió el error {c}."),
-                        };
-                        data.set_denied_name(name.into());
-                        data.set_error_text(text.into());
-                        data.set_denied(true);
-                    }
-                }
-                k.refresh(true);
-            });
-        });
+    fn killed(&self, app: &AppWindow, name: String, r: Result<(), TermError>) {
+        let data = app.global::<ProcsData>();
+        data.set_selected(-1);
+        match r {
+            Ok(()) => data.set_denied(false),
+            Err(e) => {
+                let text = match e {
+                    TermError::Denied if !app.get_admin() => String::new(),
+                    e => kill_error(e),
+                };
+                data.set_denied_name(name.into());
+                data.set_error_text(text.into());
+                data.set_denied(true);
+            }
+        }
+        self.refresh(true);
     }
 
     /// Lee en un hilo lo que arranca con Windows, con los iconos.
@@ -360,23 +339,25 @@ impl Procs {
         let k = self.clone();
         std::thread::spawn(move || {
             // Los accesos directos y SHGetFileInfoW (el icono de reserva) necesitan COM.
-            let (items, icons): (Vec<Item>, Vec<Icon>) = win::with_com(|| {
+            let (items, icons, reviews): (Vec<Item>, Vec<Icon>, Vec<bool>) = win::with_com(|| {
                 let items = win::startup::list();
                 let icons = items.iter().map(|it| it.exe.as_deref().and_then(|e| win::icon::load(e, 0))).collect();
-                (items, icons)
+                let reviews =
+                    items.iter().enumerate().map(|(i, it)| security::startup_check(i, it, &k.places).is_some()).collect();
+                (items, icons, reviews)
             });
             let _ = k.app.clone().upgrade_in_event_loop(move |app| {
                 let admin = app.get_admin();
                 let rows = items
                     .iter()
                     .zip(icons)
-                    .map(|(it, icon)| StartRow {
+                    .zip(reviews)
+                    .map(|((it, icon), review)| StartRow {
                         name: it.name.as_str().into(),
                         r#where: startup::where_text(it.source).into(),
                         on: it.enabled,
                         needs_admin: startup::needs_admin(it.source) && !admin,
-                        // La regla llega con las comprobaciones de seguridad.
-                        review: false,
+                        review,
                         icon: icon.map(Image::from_rgba8).unwrap_or_default(),
                         letter: letter(&it.name).into(),
                         tint: programs::tint(&it.name),
@@ -426,4 +407,51 @@ fn set_starts_summary(app: &AppWindow, items: &[Item]) {
     let n = items.iter().filter(|it| it.enabled).count();
     let text = if n == 1 { "1 programa arranca con Windows".to_string() } else { format!("{n} programas arrancan con Windows") };
     summary::set_procs_text(app, &text);
+}
+
+/// Terminar un programa, desde Procesos o desde un hallazgo de Seguridad: el modal y, si se
+/// confirma, una lectura nueva de los procesos en un hilo. Se termina el grupo `key` (la ruta en
+/// minúsculas) con sus PID de ese momento, solo si no es de Windows; `terminate` vuelve a mirar
+/// cada PID justo antes. Si ya no está, es `Ok`. `done` recibe el resultado en la interfaz.
+pub(super) fn ask_kill(
+    app: &AppWindow,
+    key: String,
+    n: usize,
+    name: &str,
+    system_root: String,
+    done: impl FnOnce(&AppWindow, Result<(), TermError>) + Send + 'static,
+) {
+    let text = if n == 1 {
+        format!("Se cerrará. Lo que no hayas guardado en {name} se perderá.")
+    } else {
+        format!("Se cerrarán sus {n} procesos. Lo que no hayas guardado en {name} se perderá.")
+    };
+    let ask = Confirm {
+        title: &format!("¿Terminar {name}?"),
+        text: &text,
+        lines: Vec::new(),
+        note: "",
+        confirm_text: "Terminar",
+        danger: true,
+    };
+    let weak = app.as_weak();
+    confirm(app, ask, move || {
+        std::thread::spawn(move || {
+            let me = win::proc::own_pid();
+            let target = procs::group(win::proc::snapshot(), &system_root)
+                .into_iter()
+                .find(|g| g.key == key && !g.blocked && !g.pids.contains(&me))
+                .and_then(|g| Some((g.pids, g.exe?)));
+            let r = target.map_or(Ok(()), |(pids, exe)| win::proc::terminate(&pids, &exe));
+            let _ = weak.upgrade_in_event_loop(move |app| done(&app, r));
+        });
+    });
+}
+
+/// El texto de un error al terminar (el acceso denegado sin administrador lo explica cada sección).
+pub(super) fn kill_error(e: TermError) -> String {
+    match e {
+        TermError::Denied => "Windows ha denegado el acceso. Puede que sea un proceso protegido.".into(),
+        TermError::Other(c) => format!("Windows devolvió el error {c}."),
+    }
 }

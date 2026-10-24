@@ -4,6 +4,7 @@ mod analyze;
 mod clean;
 mod procs;
 mod programs;
+mod security;
 mod summary;
 
 use slint::{CloseRequestResponse, ComponentHandle};
@@ -38,5 +39,8 @@ pub fn run() {
     analyze::Analyze::new(&app);
     programs::Programs::new(&app);
     procs::Procs::new(&app);
+    security::Security::new(&app);
     let _ = app.run();
+    // Un análisis de Defender en marcha no se queda suelto al cerrar o al reiniciar como admin.
+    security::shutdown();
 }

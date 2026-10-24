@@ -60,6 +60,13 @@ pub fn set_procs_text(app: &AppWindow, text: &str) {
     app.global::<SummaryData>().set_procs_text(text.into());
 }
 
+/// Tarjeta de Seguridad: «Sin revisar todavía» o el resultado, y el estado del antivirus.
+pub fn set_security(app: &AppWindow, title: &str, text: &str) {
+    let d = app.global::<SummaryData>();
+    d.set_security_title(title.into());
+    d.set_security_text(text.into());
+}
+
 /// Conecta la sección y lee las unidades por primera vez.
 pub fn init(app: &AppWindow) {
     let d = app.global::<SummaryData>();

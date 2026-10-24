@@ -1,7 +1,6 @@
 //! Lo que arranca solo sin estar en `Run` ni en Inicio: servicios automáticos y tareas
 //! programadas con disparador de arranque o de inicio de sesión. Solo se leen; lo que no se
 //! deja leer (acceso denegado…) se salta sin fallar la lista entera.
-#![expect(dead_code, reason = "lo usa la Task 14")]
 
 use std::ptr::{null, null_mut};
 

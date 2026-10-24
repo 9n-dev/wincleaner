@@ -35,6 +35,18 @@ pub enum Signature {
     Unknown,
 }
 
+impl Signature {
+    /// Para las reglas de seguridad: `Some(true)` si está firmado, `Some(false)` si se ha
+    /// comprobado que no (sin firma o con firma mala) y `None` si no se sabe (R16: sin hallazgo).
+    pub fn verified(&self) -> Option<bool> {
+        match self {
+            Signature::Signed(_) => Some(true),
+            Signature::Unsigned | Signature::Invalid => Some(false),
+            Signature::Unknown => None,
+        }
+    }
+}
+
 type HCatAdmin = HANDLE;
 type HCatInfo = HANDLE;
 

@@ -40,6 +40,8 @@ use winapi::um::shellapi::{
 };
 use winapi::um::shlobj::SHGetKnownFolderPath;
 use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
+use winapi::um::minwinbase::SYSTEMTIME;
+use winapi::um::sysinfoapi::GetLocalTime;
 use winapi::um::winbase::DRIVE_FIXED;
 use winapi::um::unknwnbase::IUnknown;
 use winapi::um::winnt::{HANDLE, HRESULT};
@@ -266,7 +268,6 @@ pub fn open_folder(dir: &Path) {
 /// Carpetas en las que un ejecutable da que pensar, para las comprobaciones de seguridad: las
 /// temporales son TEMP, TMP y `%SystemRoot%\Temp`.
 /// Las que no se pueden leer quedan vacías y no cuentan.
-#[expect(dead_code, reason = "lo usa la Task 14")]
 pub fn security_places() -> Places {
     let folder = |id: &GUID| known_folder(id).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
     let mut temp: Vec<String> = ["TEMP", "TMP"]
@@ -289,7 +290,6 @@ pub fn security_places() -> Places {
 
 /// Abre `url` con el programa predeterminado. Solo `https://` y `windowsdefender:`
 /// (`checks::openable_url`): nada de `file:`, `http:`, `javascript:` ni rutas.
-#[expect(dead_code, reason = "lo usa la Task 14")]
 pub fn open_url(url: &str) {
     if !checks::openable_url(url) {
         return;
@@ -300,12 +300,20 @@ pub fn open_url(url: &str) {
 }
 
 /// Abre `path` en el Bloc de notas, lanzado por ruta absoluta (`System32\notepad.exe`).
-#[expect(dead_code, reason = "lo usa la Task 14")]
 pub fn open_with_notepad(path: &Path) {
     let Some(system) = known_folder(&FOLDERID_System) else { return };
     let _ = Command::new(system.join("notepad.exe"))
         .raw_arg(format!("\"{}\"", path.display()))
         .spawn();
+}
+
+/// Hora local `(hora, minuto)`, para «Último análisis: hoy, 18:42».
+pub fn local_hm() -> (u16, u16) {
+    // SAFETY: SYSTEMTIME es de enteros, así que todo a cero es válido; GetLocalTime lo rellena.
+    let mut t: SYSTEMTIME = unsafe { std::mem::zeroed() };
+    // SAFETY: `t` es nuestro y del tamaño que espera.
+    unsafe { GetLocalTime(&mut t) };
+    (t.wHour, t.wMinute)
 }
 
 fn wide(s: impl AsRef<OsStr>) -> Vec<u16> {
