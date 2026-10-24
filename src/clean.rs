@@ -87,9 +87,9 @@ pub fn delete(cat: &Category, scan: &ScanResult, now: SystemTime) -> DeleteRepor
     let mut rep = DeleteReport::default();
     for (path, size) in &scan.files {
         #[cfg(windows)]
-        let freed = handle::try_delete(cat, path, now, &finals);
+        let freed = handle::try_delete(&cat.roots, cat.filter, path, now, &finals);
         #[cfg(not(windows))]
-        let freed = try_delete(cat, path, now);
+        let freed = try_delete(&cat.roots, cat.filter, path, now);
         match freed {
             Ok(Some(n)) => {
                 rep.freed += n;
@@ -106,11 +106,94 @@ pub fn delete(cat: &Category, scan: &ScanResult, now: SystemTime) -> DeleteRepor
         #[cfg(windows)]
         handle::remove_dir(dir, &cat.roots, &finals);
         #[cfg(not(windows))]
-        if safe_to_touch(dir, &cat.roots) && std::fs::symlink_metadata(dir).is_ok_and(|md| !is_link(&md)) {
-            let _ = std::fs::remove_dir(dir);
-        }
+        remove_dir(dir, &cat.roots);
     }
     rep
+}
+
+/// Borra `target` (archivo o carpeta) con todo lo que tenga dentro, por el mismo camino que
+/// `delete`: la raíz es la carpeta padre y no hay filtro de antigüedad. Los enlaces no se
+/// siguen ni se borran: cuentan como saltados, y la carpeta que los contiene se queda.
+/// Si `target` ya no existe, no hay nada que hacer.
+pub fn purge(target: &Path) -> DeleteReport {
+    let mut rep = DeleteReport::default();
+    let Some(parent) = target.parent() else { return rep };
+    let roots = [parent.to_path_buf()];
+    let now = SystemTime::now();
+    let mut files = Vec::new();
+    let mut dirs = Vec::new();
+    match std::fs::symlink_metadata(target) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return rep,
+        Err(_) => rep.skipped += 1,
+        Ok(md) if is_link(&md) => rep.skipped += 1,
+        Ok(md) if md.is_dir() => dirs.push(target.to_path_buf()),
+        Ok(md) => files.push((target.to_path_buf(), md.len())),
+    }
+    let mut stack = dirs.clone();
+    while let Some(dir) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            rep.skipped += 1;
+            continue;
+        };
+        for e in rd {
+            let Ok(path) = e.map(|e| e.path()) else {
+                rep.skipped += 1;
+                continue;
+            };
+            match std::fs::symlink_metadata(&path) {
+                Ok(md) if is_link(&md) => rep.skipped += 1,
+                Ok(md) if md.is_dir() => {
+                    dirs.push(path.clone());
+                    stack.push(path);
+                }
+                Ok(md) if md.is_file() => files.push((path, md.len())),
+                // Desaparecido entre listar y mirar: ya está hecho.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                _ => rep.skipped += 1,
+            }
+        }
+    }
+    dirs.sort_by_key(|d| std::cmp::Reverse(d.components().count()));
+    #[cfg(windows)]
+    let finals = handle::final_roots(&roots);
+    for (path, size) in &files {
+        #[cfg(windows)]
+        let freed = handle::try_delete(&roots, Filter::All, path, now, &finals);
+        #[cfg(not(windows))]
+        let freed = try_delete(&roots, Filter::All, path, now);
+        match freed {
+            Ok(Some(n)) => {
+                rep.freed += n;
+                rep.deleted += 1;
+            }
+            Ok(None) => {}
+            Err(()) => {
+                rep.skipped += 1;
+                rep.skipped_bytes += size;
+            }
+        }
+    }
+    for dir in &dirs {
+        #[cfg(windows)]
+        handle::remove_dir(dir, &roots, &finals);
+        #[cfg(not(windows))]
+        remove_dir(dir, &roots);
+    }
+    rep
+}
+
+/// Ruta final (`C:\…`) de `path`, abierto sin seguir un enlace en el último componente.
+#[cfg(windows)]
+pub fn final_path_of(path: &Path) -> Option<String> {
+    handle::final_path_of(path)
+}
+
+/// Borra `dir` si está vacía; si no, falla y se ignora.
+#[cfg(not(windows))]
+fn remove_dir(dir: &Path, roots: &[PathBuf]) {
+    if safe_to_touch(dir, roots) && std::fs::symlink_metadata(dir).is_ok_and(|md| md.is_dir() && !is_link(&md)) {
+        let _ = std::fs::remove_dir(dir);
+    }
 }
 
 /// Todos los ancestros de `path` desde `root` (inclusive) son carpetas reales, sin enlaces.
@@ -130,8 +213,8 @@ fn safe_to_touch(path: &Path, roots: &[PathBuf]) -> bool {
 
 /// `Ok(Some(bytes))` borrado, `Ok(None)` ya no existe, `Err` saltado.
 #[cfg(not(windows))]
-fn try_delete(cat: &Category, path: &Path, now: SystemTime) -> Result<Option<u64>, ()> {
-    if !in_any_root(path, &cat.roots) {
+fn try_delete(roots: &[PathBuf], filter: Filter, path: &Path, now: SystemTime) -> Result<Option<u64>, ()> {
+    if !in_any_root(path, roots) {
         return Err(());
     }
     let md = match std::fs::symlink_metadata(path) {
@@ -139,7 +222,7 @@ fn try_delete(cat: &Category, path: &Path, now: SystemTime) -> Result<Option<u64
         Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
         Err(_) => return Err(()),
     };
-    if is_link(&md) || !md.is_file() || !age_ok(&md, cat.filter, now) || !safe_to_touch(path, &cat.roots) {
+    if is_link(&md) || !md.is_file() || !age_ok(&md, filter, now) || !safe_to_touch(path, roots) {
         return Err(());
     }
     // ponytail: este camino por ruta solo existe para las pruebas en Linux y deja una ventana
@@ -161,7 +244,7 @@ fn try_delete(cat: &Category, path: &Path, now: SystemTime) -> Result<Option<u64
 #[cfg(windows)]
 mod handle {
     use super::{age_ok, in_any_root};
-    use crate::categories::{is_link, Category};
+    use crate::categories::{is_link, Filter};
     use crate::paths::{is_inside, strip_verbatim};
     use std::fs::{File, OpenOptions};
     use std::io::ErrorKind;
@@ -217,6 +300,10 @@ mod handle {
         None
     }
 
+    pub fn final_path_of(path: &Path) -> Option<String> {
+        open(path, FILE_READ_ATTRIBUTES).ok().and_then(|f| final_path(&f))
+    }
+
     fn inside(f: &File, finals: &[String]) -> bool {
         final_path(f).is_some_and(|p| finals.iter().any(|r| is_inside(&p, r)))
     }
@@ -255,8 +342,14 @@ mod handle {
     }
 
     /// `Ok(Some(bytes))` borrado, `Ok(None)` ya no existe, `Err` saltado.
-    pub fn try_delete(cat: &Category, path: &Path, now: SystemTime, finals: &[String]) -> Result<Option<u64>, ()> {
-        if !in_any_root(path, &cat.roots) {
+    pub fn try_delete(
+        roots: &[PathBuf],
+        filter: Filter,
+        path: &Path,
+        now: SystemTime,
+        finals: &[String],
+    ) -> Result<Option<u64>, ()> {
+        if !in_any_root(path, roots) {
             return Err(());
         }
         let f = match open(path, DELETE | FILE_READ_ATTRIBUTES) {
@@ -265,7 +358,7 @@ mod handle {
             Err(_) => return Err(()),
         };
         let md = f.metadata().map_err(|_| ())?;
-        if is_link(&md) || !md.is_file() || !age_ok(&md, cat.filter, now) || !inside(&f, finals) {
+        if is_link(&md) || !md.is_file() || !age_ok(&md, filter, now) || !inside(&f, finals) {
             return Err(());
         }
         if mark_deleted(&f) { Ok(Some(md.len())) } else { Err(()) }
@@ -498,4 +591,75 @@ mod tests {
         assert_eq!((rep.skipped, rep.deleted), (0, 0));
     }
 
+    #[test]
+    fn purge_removes_tree_and_target() {
+        let base = temp_dir("purge_tree");
+        let t = base.join("carpeta");
+        write(&t.join("a.bin"), 100);
+        write(&t.join("sub/deep/b.bin"), 50);
+        let rep = purge(&t);
+        assert_eq!((rep.freed, rep.deleted, rep.skipped), (150, 2, 0));
+        assert!(!t.exists());
+        assert!(base.exists());
+    }
+
+    #[test]
+    fn purge_file_target() {
+        let base = temp_dir("purge_file");
+        let f = base.join("video.mov");
+        write(&f, 42);
+        let rep = purge(&f);
+        assert_eq!((rep.freed, rep.deleted), (42, 1));
+        assert!(!f.exists());
+        assert!(base.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn purge_does_not_follow_links() {
+        let base = temp_dir("purge_links");
+        let (t, fuera) = (base.join("carpeta"), base.join("fuera"));
+        write(&fuera.join("x.bin"), 5);
+        write(&t.join("a.bin"), 3);
+        std::os::unix::fs::symlink(&fuera, t.join("enlace")).unwrap();
+        let rep = purge(&t);
+        assert!(fuera.join("x.bin").exists());
+        assert!(rep.skipped >= 1);
+        assert!(t.exists());
+        assert!(!t.join("a.bin").exists());
+    }
+
+    #[test]
+    fn purge_missing_target_is_ok() {
+        let base = temp_dir("purge_missing");
+        assert_eq!(purge(&base.join("no_existe")), DeleteReport::default());
+    }
+
+    #[test]
+    fn purge_unicode_and_deep() {
+        let base = temp_dir("purge_unicode");
+        let t = base.join("ñandú 🎉 raíz");
+        let mut deep = t.clone();
+        for i in 0..30 {
+            deep = deep.join(format!("ñandú 🎉 {i}"));
+        }
+        write(&deep.join("fondo 🎉.bin"), 7);
+        let rep = purge(&t);
+        assert_eq!((rep.freed, rep.deleted, rep.skipped), (7, 1, 0));
+        assert!(!t.exists());
+    }
+
+    #[test]
+    fn purge_readonly_files() {
+        let base = temp_dir("purge_readonly");
+        let t = base.join("carpeta");
+        let f = t.join("ro.bin");
+        write(&f, 3);
+        let mut perm = fs::metadata(&f).unwrap().permissions();
+        perm.set_readonly(true);
+        fs::set_permissions(&f, perm).unwrap();
+        let rep = purge(&t);
+        assert_eq!(rep.deleted, 1);
+        assert!(!t.exists());
+    }
 }
