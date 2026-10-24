@@ -99,8 +99,10 @@ mod ffi {
 }
 
 /// FOF_SILENT | FOF_NOCONFIRMATION | FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR | FOF_NOERRORUI |
-/// FOFX_RECYCLEONDELETE. Nunca FOFX_EARLYFAILURE: un fallo no para el resto.
-const FLAGS: DWORD = 0x4 | 0x10 | 0x40 | 0x200 | 0x400 | 0x8_0000;
+/// FOF_NO_CONNECTED_ELEMENTS | FOFX_RECYCLEONDELETE. Sin FOF_NO_CONNECTED_ELEMENTS, borrar
+/// `pagina.htm` se llevaría también `pagina_files\`, que nadie ha elegido ni comprobado.
+/// Nunca FOFX_EARLYFAILURE: un fallo no para el resto.
+const FLAGS: DWORD = 0x4 | 0x10 | 0x40 | 0x200 | 0x400 | 0x2000 | 0x8_0000;
 
 #[derive(Debug, Default)]
 pub struct Report {
