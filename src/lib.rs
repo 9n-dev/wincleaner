@@ -1,7 +1,9 @@
 pub mod analyze;
 pub mod categories;
+pub mod checks;
 pub mod cmdline;
 pub mod clean;
+pub mod defender;
 pub mod format;
 pub mod paths;
 pub mod procs;
