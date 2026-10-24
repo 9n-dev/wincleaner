@@ -146,6 +146,7 @@ fn try_delete(cat: &Category, path: &Path, now: SystemTime) -> Result<Option<u64
     // TOCTOU entre comprobar y borrar; en Windows se borra por handle (mod `handle`).
     if md.permissions().readonly() {
         let mut perm = md.permissions();
+        #[expect(clippy::permissions_set_readonly_false, reason = "solo en las pruebas, sobre un archivo que se borra justo después")]
         perm.set_readonly(false);
         let _ = std::fs::set_permissions(path, perm);
     }

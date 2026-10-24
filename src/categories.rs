@@ -314,7 +314,7 @@ mod tests {
         create_dir_all(&crash).unwrap();
         env.system_root = Some(sr.clone());
         let cats = build_categories(&env);
-        assert_eq!(get(&cats, CategoryId::DumpsLogs).roots, [crash.clone()]);
+        assert_eq!(get(&cats, CategoryId::DumpsLogs).roots, std::slice::from_ref(&crash));
         env.is_admin = true;
         let cats = build_categories(&env);
         let roots = &get(&cats, CategoryId::DumpsLogs).roots;

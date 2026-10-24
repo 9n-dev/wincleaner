@@ -30,9 +30,41 @@ pub fn count(n: u64) -> String {
     out
 }
 
+/// Duración legible: "menos de 1 s", "5 s", "2 min 41 s", "1 h 2 min". Las partes a cero
+/// se omiten ("2 min", "1 h").
+pub fn duration(d: std::time::Duration) -> String {
+    let s = d.as_secs();
+    let (h, m, s) = (s / 3600, s / 60 % 60, s % 60);
+    match (h, m, s) {
+        (0, 0, 0) => "menos de 1 s".into(),
+        (0, 0, s) => format!("{s} s"),
+        (0, m, 0) => format!("{m} min"),
+        (0, m, s) => format!("{m} min {s} s"),
+        (h, 0, _) => format!("{h} h"),
+        (h, m, _) => format!("{h} h {m} min"),
+    }
+}
+
+/// Fecha `(año, mes, día)` como "03/02/2025".
+pub fn date_dmy((y, m, d): (u16, u8, u8)) -> String {
+    format!("{d:02}/{m:02}/{y:04}")
+}
+
+/// Queda poco espacio: menos del 15 % libre. Con `total` a 0 (no se pudo leer) no avisa.
+pub fn low_space(free: u64, total: u64) -> bool {
+    free as u128 * 100 < total as u128 * 15
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn low_space_threshold() {
+        assert!(low_space(14, 100));
+        assert!(!low_space(15, 100));
+        assert!(!low_space(0, 0));
+    }
 
     #[test]
     fn bytes_examples() {
@@ -50,6 +82,20 @@ mod tests {
         for (n, esperado) in casos {
             assert_eq!(bytes(n), esperado, "n = {n}");
         }
+    }
+
+    #[test]
+    fn duration_formats() {
+        use std::time::Duration;
+        assert_eq!(duration(Duration::from_millis(300)), "menos de 1 s");
+        assert_eq!(duration(Duration::from_secs(5)), "5 s");
+        assert_eq!(duration(Duration::from_secs(161)), "2 min 41 s");
+        assert_eq!(duration(Duration::from_secs(3720)), "1 h 2 min");
+    }
+
+    #[test]
+    fn date_dmy_pads() {
+        assert_eq!(date_dmy((2025, 2, 3)), "03/02/2025");
     }
 
     #[test]

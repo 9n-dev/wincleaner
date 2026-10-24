@@ -1,0 +1,243 @@
+// Sección Resumen: unidades y una tarjeta por sección. Todo llega por `SummaryData`.
+import { Palette, Type, Icon } from "../theme.slint";
+import { Button, ButtonKind, Card, Bar, Tone } from "../widgets.slint";
+import { Head } from "clean.slint";
+
+export struct DriveRow {
+    // «C:»
+    name: string,
+    // «Sistema»; vacío si el volumen no tiene nombre.
+    label: string,
+    // «64 GB libres de 476 GB»
+    text: string,
+    // Parte ocupada, 0..1.
+    used: float,
+    // Queda menos del 15 % libre: la barra sale en `warn`.
+    low: bool,
+}
+
+export global SummaryData {
+    in property <[DriveRow]> drives;
+    in property <string> clean-total: "—";
+    in property <string> clean-text;
+    // Las tres tarjetas siguientes las rellenan las secciones Seguridad, Procesos y Programas.
+    in property <string> security-title: "—";
+    in property <string> security-text;
+    in property <string> procs-title: "—";
+    in property <string> procs-text;
+    in property <string> programs-title: "—";
+    in property <string> programs-text;
+    // Sección a la que lleva el botón de una tarjeta (índice de `AppWindow.section`).
+    callback go(int);
+    // Se pide al mostrar la sección: Rust vuelve a leer las unidades.
+    callback refresh();
+}
+
+component Label inherits Text {
+    color: Palette.mu;
+    font-size: 11.5px;
+    font-weight: 600;
+    letter-spacing: 0.6px;
+}
+
+component SummaryCard inherits Card {
+    in property <string> title;
+    in property <string> big;
+    in property <string> text;
+    in property <string> icon;
+    in property <string> button;
+    in property <bool> primary;
+    // Tarjeta de limpieza: el dato va grande y en verde.
+    in property <bool> hero;
+    callback clicked();
+    min-height: 120px;
+
+    Label { text: root.title.to-uppercase(); }
+    VerticalLayout {
+        spacing: 3px;
+
+        Text {
+            text: root.big;
+            color: root.hero ? Palette.ac : Palette.tx;
+            font-size: root.hero ? 30px : 18px;
+            font-weight: 600;
+            overflow: elide;
+        }
+        Text {
+            text: root.text;
+            color: Palette.mu;
+            overflow: elide;
+        }
+    }
+    HorizontalLayout {
+        padding-top: 4px;
+        alignment: start;
+
+        Button {
+            text: root.button;
+            icon: root.icon;
+            kind: root.primary ? ButtonKind.primary : ButtonKind.secondary;
+            clicked => { root.clicked(); }
+        }
+    }
+}
+
+export component SummaryPage inherits Rectangle {
+    in property <bool> compact;
+    // Media columna de la cuadrícula 2×2. Con ancho fijo, el contenido no desiguala las
+    // columnas (la página solo se monta en ancho, así que no hay bucle con `compact`).
+    property <length> half: (root.width - 64px - 16px) / 2;
+
+    Flickable {
+        width: parent.width;
+        height: parent.height;
+        content-width: self.width;
+        content-height: body.preferred-height;
+
+        body := VerticalLayout {
+            width: parent.width;
+            padding: root.compact ? 20px : 32px;
+            padding-top: root.compact ? 20px : 28px;
+            spacing: 18px;
+            alignment: start;
+
+            Head {
+                title: "Resumen";
+                text: "Así está tu equipo ahora.";
+            }
+
+            Card {
+                Label { text: "UNIDADES"; }
+                for d in SummaryData.drives: VerticalLayout {
+                    spacing: 6px;
+                    padding-bottom: 6px;
+
+                    HorizontalLayout {
+                        spacing: 14px;
+
+                        Icon {
+                            name: "drive";
+                            color: Palette.mu;
+                        }
+                        Text {
+                            text: d.name;
+                            color: Palette.tx;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: d.label;
+                            color: Palette.mu;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                            overflow: elide;
+                        }
+                        Text {
+                            text: d.text;
+                            color: Palette.mu;
+                            vertical-alignment: center;
+                        }
+                    }
+                    Bar {
+                        value: d.used;
+                        kind: d.low ? Tone.warn : Tone.ok;
+                    }
+                }
+                if SummaryData.drives.length == 0: Text {
+                    text: "No se han podido leer las unidades.";
+                    color: Palette.mu;
+                }
+            }
+
+            // 2×2 con la ventana ancha; una columna si es estrecha.
+            if !root.compact: VerticalLayout {
+                spacing: 16px;
+
+                HorizontalLayout {
+                    spacing: 16px;
+                    alignment: start;
+                    SummaryCard {
+                        width: root.half;
+                        title: "Limpieza";
+                        big: SummaryData.clean-total;
+                        hero: true;
+                        text: SummaryData.clean-text;
+                        icon: "broom";
+                        button: "Revisar y limpiar";
+                        primary: true;
+                        clicked => { SummaryData.go(1); }
+                    }
+                    SummaryCard {
+                        width: root.half;
+                        title: "Seguridad";
+                        big: SummaryData.security-title;
+                        text: SummaryData.security-text;
+                        icon: "shield";
+                        button: "Revisar ahora";
+                        clicked => { SummaryData.go(5); }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 16px;
+                    alignment: start;
+                    SummaryCard {
+                        width: root.half;
+                        title: "En segundo plano";
+                        big: SummaryData.procs-title;
+                        text: SummaryData.procs-text;
+                        icon: "pulse";
+                        button: "Ver procesos";
+                        clicked => { SummaryData.go(4); }
+                    }
+                    SummaryCard {
+                        width: root.half;
+                        title: "Programas";
+                        big: SummaryData.programs-title;
+                        text: SummaryData.programs-text;
+                        icon: "apps";
+                        button: "Ver programas";
+                        clicked => { SummaryData.go(3); }
+                    }
+                }
+            }
+            if root.compact: VerticalLayout {
+                spacing: 16px;
+
+                SummaryCard {
+                    title: "Limpieza";
+                    big: SummaryData.clean-total;
+                    hero: true;
+                    text: SummaryData.clean-text;
+                    icon: "broom";
+                    button: "Revisar y limpiar";
+                    primary: true;
+                    clicked => { SummaryData.go(1); }
+                }
+                SummaryCard {
+                    title: "Seguridad";
+                    big: SummaryData.security-title;
+                    text: SummaryData.security-text;
+                    icon: "shield";
+                    button: "Revisar ahora";
+                    clicked => { SummaryData.go(5); }
+                }
+                SummaryCard {
+                    title: "En segundo plano";
+                    big: SummaryData.procs-title;
+                    text: SummaryData.procs-text;
+                    icon: "pulse";
+                    button: "Ver procesos";
+                    clicked => { SummaryData.go(4); }
+                }
+                SummaryCard {
+                    title: "Programas";
+                    big: SummaryData.programs-title;
+                    text: SummaryData.programs-text;
+                    icon: "apps";
+                    button: "Ver programas";
+                    clicked => { SummaryData.go(3); }
+                }
+            }
+        }
+    }
+}

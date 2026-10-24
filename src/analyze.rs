@@ -34,7 +34,8 @@ pub fn pick_top_dirs(mut dirs: Vec<(PathBuf, u64)>, n: usize) -> Vec<(PathBuf, u
     selected
 }
 
-pub fn analyze(root: &Path, cancel: &AtomicBool, progress: &mut dyn FnMut(u64)) -> Analysis {
+/// `progress` recibe cada 10 000 archivos el total y la carpeta que se está leyendo.
+pub fn analyze(root: &Path, cancel: &AtomicBool, progress: &mut dyn FnMut(u64, &Path)) -> Analysis {
     // (ruta, índice del padre, bytes de archivos directos); los hijos siempre van después del padre.
     // ponytail: un PathBuf por carpeta (≈100+ MB en discos enormes); si pesa, guardar índice del padre + nombre.
     let mut dirs: Vec<(PathBuf, usize, u64)> = vec![(root.to_path_buf(), 0, 0)];
@@ -63,7 +64,7 @@ pub fn analyze(root: &Path, cancel: &AtomicBool, progress: &mut dyn FnMut(u64)) 
                     }
                     out.files_scanned += 1;
                     if out.files_scanned.is_multiple_of(10_000) {
-                        progress(out.files_scanned);
+                        progress(out.files_scanned, &dir);
                     }
                 }
             }
@@ -96,7 +97,7 @@ mod tests {
     }
 
     fn run(root: &Path) -> Analysis {
-        analyze(root, &AtomicBool::new(false), &mut |_| {})
+        analyze(root, &AtomicBool::new(false), &mut |_, _| {})
     }
 
     #[test]
@@ -177,9 +178,22 @@ mod tests {
     fn analyze_honours_cancel() {
         let root = temp_dir("an-cancel");
         write(&root.join("1.bin"), 5);
-        let r = analyze(&root, &AtomicBool::new(true), &mut |_| {});
+        let r = analyze(&root, &AtomicBool::new(true), &mut |_, _| {});
         assert!(r.cancelled);
         assert_eq!(r.files_scanned, 0);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn analyze_reports_current_dir() {
+        let root = temp_dir("an-current");
+        fs::create_dir_all(root.join("a")).unwrap();
+        for i in 0..10_001 {
+            fs::write(root.join(format!("a/{i}")), b"").unwrap();
+        }
+        let mut seen = false;
+        analyze(&root, &AtomicBool::new(false), &mut |_, dir| seen |= dir.ends_with("a"));
+        assert!(seen);
         let _ = fs::remove_dir_all(&root);
     }
 }
