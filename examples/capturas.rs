@@ -312,6 +312,47 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     data.set_note(0);
 
+    // Juegos, con los datos de `GAMES` de las maquetas: lista, confirmar y vacío.
+    use wincleaner::ui::{GameRow, GamesData};
+    let games = [
+        (0x8fb0c4, "B", "Baldur's Gate 3", "Steam · jugado hace 3 días", "118 GB"),
+        (0xc4a7b4, "C", "Call of Duty®", "Battle.net · jugado hace 8 meses", "92 GB"),
+        (0xd6b38a, "F", "Fortnite", "Epic Games · jugado hace 1 año", "34 GB"),
+        (0xa9c2b8, "H", "Hollow Knight", "GOG · jugado hace 2 años", "9,2 GB"),
+        (0x8fc2c0, "F", "Forza Horizon 5", "Xbox · jugado hace 5 meses", "128 GB"),
+        (0x8fb0c4, "S", "Stardew Valley", "Steam · nunca jugado", "620 MB"),
+    ]
+    .map(|(c, l, n, d, s): (u32, _, _, _, _)| GameRow {
+        name: n.into(),
+        sub: d.into(),
+        size: s.into(),
+        letter: l.into(),
+        tint: slint::Color::from_rgb_u8((c >> 16) as u8, (c >> 8) as u8, c as u8),
+    });
+    let juegos = app.global::<GamesData>();
+    juegos.set_phase(1);
+    data.set_tab(1);
+    modal.set_title("¿Desinstalar Call of Duty®?".into());
+    modal.set_text("Se abrirá Battle.net para desinstalarlo: así el lanzador sabe que ya no está. Liberarás unos 92 GB.".into());
+    modal.set_lines(model(Vec::new()));
+    modal.set_note("".into());
+    modal.set_confirm_text("Abrir Battle.net".into());
+    modal.set_danger(true);
+    modal.set_alt_text("".into());
+    for (nombre, rows, selected) in
+        [("juegos", games.to_vec(), 1), ("juegos-confirmar", games.to_vec(), 1), ("juegos-vacio", Vec::new(), -1)]
+    {
+        juegos.set_subtitle(if rows.is_empty() { "Ningún juego encontrado" } else { "6 juegos instalados · 382 GB en total" }.into());
+        juegos.set_rows(model(rows));
+        juegos.set_selected(selected);
+        modal.set_open(nombre == "juegos-confirmar");
+        for (suffix, w, h) in [("", 1100, 720), ("-min", 880, 600)] {
+            guarda(&format!("wces-{nombre}{suffix}"), &headless::render(app.window(), w, h), w, h)?;
+        }
+    }
+    modal.set_open(false);
+    data.set_tab(0);
+
     // Programas, con los datos de `PROGS` de las maquetas.
     use wincleaner::ui::{ProgramRow, ProgramsData};
     let progs = [

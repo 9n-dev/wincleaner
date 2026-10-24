@@ -73,7 +73,8 @@ impl Zones {
         !Self::at_or_in(path, &self.profile) && self.trees.iter().any(|t| Self::at_or_in(path, t))
     }
 
-    fn in_game(&self, path: &str) -> bool {
+    /// Igual o dentro de una carpeta de juego (no basta con contener una).
+    pub fn in_game(&self, path: &str) -> bool {
         self.games.iter().any(|g| Self::at_or_in(path, g))
     }
 
@@ -212,6 +213,8 @@ mod tests {
         all(&[r"D:\SteamLibrary\steamapps\common\Baldurs Gate 3", r"D:\SteamLibrary\steamapps\common\Baldurs Gate 3\bin\x.dll",
             r"D:\SteamLibrary"], Some(Block::Game));
         all(&[r"D:\SteamLibrary\otra.txt", r"D:\Juegos viejos"], None);
+        assert!(z().in_game(r"D:\SteamLibrary\steamapps\common\Baldurs Gate 3\bin"));
+        assert!(!z().in_game(r"D:\SteamLibrary"));
     }
 
     #[test]

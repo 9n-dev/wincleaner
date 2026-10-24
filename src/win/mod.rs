@@ -1,6 +1,7 @@
 //! Capa fina sobre Win32: entorno, permisos, papelera, unidades y Explorador.
 
 pub mod defender;
+pub mod games;
 pub mod icon;
 pub mod proc;
 pub mod recycle;

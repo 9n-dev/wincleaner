@@ -3,6 +3,7 @@
 import { Palette, Type, Icon } from "../theme.slint";
 import { Button, ButtonKind, Note, Pill, Seg, Bar, EmptyState, Tone } from "../widgets.slint";
 import { Head, ListBox } from "clean.slint";
+import { GamesData, GameList } from "games.slint";
 
 export struct DriveItem {
     // «C:»
@@ -356,6 +357,8 @@ export component SpacePage inherits Rectangle {
     in property <bool> admin;
     callback relaunch-admin();
     property <bool> folders: SpaceData.tab == 0;
+    property <bool> games: SpaceData.tab == 1;
+    property <bool> game-list: root.games && GamesData.phase == 1 && GamesData.rows.length > 0;
     property <int> phase: SpaceData.phase;
     property <bool> lock: SpaceData.lock-title != "";
 
@@ -371,7 +374,7 @@ export component SpacePage inherits Rectangle {
         Head {
             vertical-stretch: 0;
             title: "Espacio";
-            text: SpaceData.subtitle;
+            text: root.games ? GamesData.subtitle : SpaceData.subtitle;
 
             if root.folders && root.phase != 0: Button {
                 text: root.phase == 1 ? "Detener" : "Volver a analizar";
@@ -574,17 +577,21 @@ export component SpacePage inherits Rectangle {
                 }
             }
         }
-        // Un solo estado vacío para todo: otras pestañas, unidades, analizando y carpeta vacía.
-        if !root.folders || root.phase != 2 || SpaceData.rows.length == 0: EmptyState {
+        if root.game-list: GameList { }
+        // Un solo estado vacío para todo: otras pestañas, unidades, analizando, carpeta vacía y sin juegos.
+        if !root.game-list && (!root.folders || root.phase != 2 || SpaceData.rows.length == 0): EmptyState {
             preferred-height: 100000px;
             min-height: 120px;
-            // Juegos, Duplicados e Instaladores viejos llegan en sus tareas.
-            icon: !root.folders ? (SpaceData.tab == 1 ? "game" : SpaceData.tab == 2 ? "copy" : "box")
+            // Duplicados e Instaladores viejos llegan en sus tareas.
+            icon: !root.folders ? (root.games ? "game" : SpaceData.tab == 2 ? "copy" : "box")
                 : root.phase == 0 ? "disk" : root.phase == 2 ? "folder" : "";
-            title: !root.folders ? "Todavía no está disponible"
+            title: root.games ? (GamesData.phase == 0 ? "" : "No hay juegos instalados")
+                : !root.folders ? "Todavía no está disponible"
                 : root.phase == 0 ? (SpaceData.drives.length > 0 ? "Elige una unidad para ver qué ocupa" : "No hay unidades")
                 : root.phase == 2 ? "Esta carpeta está vacía" : "";
-            text: !root.folders || root.phase == 2 ? ""
+            text: root.games ? (GamesData.phase == 0 ? "Los juegos aparecerán en cuanto termine."
+                : "WinCleaner reconoce Steam, Epic Games, GOG, Xbox, Battle.net, EA app y Ubisoft Connect.")
+                : !root.folders || root.phase == 2 ? ""
                 : root.phase == 1 ? "Las carpetas aparecerán en cuanto termine."
                 : SpaceData.drives.length > 0 ? "En un disco grande tarda unos minutos. Puedes seguir usando el equipo."
                 : "WinCleaner no ha encontrado ningún disco fijo.";

@@ -1,6 +1,7 @@
 //! Ventana principal: crea `AppWindow`, conecta la barra lateral y monta las secciones.
 
 mod clean;
+mod games;
 mod procs;
 mod programs;
 mod security;
@@ -51,8 +52,9 @@ pub fn run() {
     });
     summary::init(&app);
     let _clean = clean::Clean::new(&app);
-    space::Space::new(&app);
-    programs::Programs::new(&app);
+    let programs = programs::Programs::new(&app);
+    let space = space::Space::new(&app);
+    games::Games::new(&app, programs, space);
     procs::Procs::new(&app);
     security::Security::new(&app);
     let _ = app.run();

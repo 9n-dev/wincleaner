@@ -168,7 +168,8 @@ fn lock_note(tree: &Tree, id: Id, zones: Option<&Zones>) -> Option<(String, Stri
             "WinCleaner no ha podido saber qué carpetas de Windows tiene que proteger, así que por seguridad todo es solo para ver.",
         );
     };
-    match zones.check(&tree.path(id).to_string_lossy())? {
+    let path = tree.path(id).to_string_lossy().into_owned();
+    match zones.check(&path)? {
         Block::Protected => {
             // La primera carpeta con nombre propio del camino dice de qué zona es.
             let zone = tree.crumbs(id).into_iter().find_map(|c| zones.label(&tree.path(c).to_string_lossy()));
@@ -191,6 +192,11 @@ fn lock_note(tree: &Tree, id: Id, zones: Option<&Zones>) -> Option<(String, Stri
         Block::System => note(
             format!("{name} es un archivo del sistema."),
             "Windows lo usa y lo vuelve a crear. Para que ocupe menos, cambia la memoria virtual o la hibernación en la configuración de Windows.",
+        ),
+        // Lleva un juego dentro (la biblioteca de Steam, `Program Files (x86)`…), pero no es uno.
+        Block::Game if !zones.in_game(&path) => note(
+            format!("{name} tiene juegos dentro."),
+            "Si la borras, los lanzadores seguirían creyendo que están instalados. Desinstálalos desde la pestaña Juegos.",
         ),
         Block::Game => note(
             format!("{name} es de un juego."),
@@ -407,6 +413,17 @@ impl Space {
             })
         });
         c
+    }
+
+    /// Las carpetas de los juegos pasan a estar protegidas (pastilla «Juegos») y se repintan las filas.
+    pub(super) fn set_games(&self, dirs: &[String]) {
+        STATE.with_borrow_mut(|st| st.zones = st.zones.as_ref().map(|z| z.with_games(dirs)));
+        // Solo con una carpeta a la vista: mientras se analiza no hay filas que repintar.
+        self.with(|app| {
+            if app.global::<SpaceData>().get_phase() == 2 {
+                show(app);
+            }
+        });
     }
 
     fn with(&self, f: impl FnOnce(&AppWindow)) {
