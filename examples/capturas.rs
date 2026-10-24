@@ -392,7 +392,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ("seguridad-sin-defender", SecPhase::Idle, 1, "", 0, 0),
         // WMI no responde: aviso neutro y, con MpCmdRun, los análisis siguen.
         ("seguridad-desconocido", SecPhase::Idle, 3, "", 0, 0),
+        // Una comprobación no se pudo hacer: escudo ámbar, no verde.
+        ("seguridad-limpio-incompleto", SecPhase::Clean, 0, "Último análisis: hoy, 18:42 · rápido", 6, 0),
     ] {
+        let incompleto = nombre.ends_with("incompleto");
+        data.set_incomplete(incompleto);
+        if incompleto {
+            data.set_clean_text(
+                "Defender no ha detectado amenazas. 5 de 6 comprobaciones bien; no se pudo revisar: Archivo hosts.".into(),
+            );
+        }
         data.set_phase(phase);
         data.set_av(av);
         data.set_scan_anyway(av == 3);

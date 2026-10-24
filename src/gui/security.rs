@@ -473,6 +473,7 @@ impl Security {
             SecPhase::Clean
         };
         data.set_clean_text(checks::clean_text(defender_ok, CHECKS.len(), &failed).into());
+        data.set_incomplete(!failed.is_empty() || (kind.is_some() && !defender_ok));
         data.set_needs_admin(def.needs_admin);
         data.set_defender_running(false);
         data.set_header(header.as_str().into());

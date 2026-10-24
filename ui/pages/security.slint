@@ -41,6 +41,8 @@ export global SecurityData {
     in property <bool> banner-bad;
     // Texto de «No se ha encontrado nada raro».
     in property <string> clean-text;
+    // Algo no se pudo revisar (una comprobación o el análisis de Defender): sin escudo verde.
+    in property <bool> incomplete;
     // Defender pidió permisos de administrador para analizar.
     in property <bool> needs-admin;
     // Hay un análisis de Defender en marcha (no solo las comprobaciones): se puede cancelar.
@@ -384,14 +386,16 @@ export component SecurityPage inherits Rectangle {
                         alignment: center;
                         padding-bottom: 8px;
                         Icon {
-                            name: "shieldok";
+                            name: SecurityData.incomplete ? "shield" : "shieldok";
                             size: 48px;
                             stroke-width: 1.4px;
-                            color: Palette.ac;
+                            color: SecurityData.incomplete ? Palette.warn : Palette.ac;
                         }
                     }
                     Text {
-                        text: "No se ha encontrado nada raro";
+                        text: SecurityData.incomplete
+                            ? "No se ha encontrado nada raro en lo que se pudo revisar"
+                            : "No se ha encontrado nada raro";
                         color: Palette.tx;
                         font-size: 20px;
                         font-weight: 600;
