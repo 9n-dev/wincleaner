@@ -219,31 +219,28 @@ pub fn dedupe_roots(v: Vec<PathBuf>) -> Vec<PathBuf> {
 }
 
 pub struct Keep {
-    /// Documentos, Imágenes, Vídeos, Música.
+    /// Rutas completas de Documentos, Imágenes, Vídeos y Música.
     pub natural: Vec<String>,
-    /// Descargas, Escritorio.
+    /// Rutas completas de Descargas y Escritorio.
     pub loose: Vec<String>,
 }
 
 fn rank(p: &Path, k: &Keep) -> u8 {
-    let s = p.to_string_lossy().to_lowercase();
-    let has = |names: &[String]| {
-        let mut parts: Vec<&str> = s.split(['/', '\\']).collect();
-        parts.pop(); // el nombre del archivo no cuenta
-        names.iter().any(|n| parts.contains(&n.to_lowercase().as_str()))
-    };
-    if has(&k.natural) {
+    let s = p.to_string_lossy();
+    let inside = |dirs: &[String]| dirs.iter().any(|d| crate::paths::is_inside(&s, d));
+    if inside(&k.natural) {
         0
-    } else if has(&k.loose) {
+    } else if inside(&k.loose) {
         2
     } else {
         1
     }
 }
 
-/// Índice de la copia que se conserva: mejor rango y, si empatan, la más antigua.
+/// Índice de la copia que se conserva: mejor rango, la más antigua y, si siguen empatadas, la
+/// ruta menor (para que el resultado no dependa del orden).
 pub fn keeper(g: &Group, k: &Keep) -> usize {
-    (0..g.files.len()).min_by_key(|&i| (rank(&g.files[i].path, k), g.files[i].modified)).unwrap_or(0)
+    (0..g.files.len()).min_by_key(|&i| (rank(&g.files[i].path, k), g.files[i].modified, &g.files[i].path)).unwrap_or(0)
 }
 
 /// `false` si marcar `i` deja el grupo sin ninguna copia.
@@ -366,10 +363,19 @@ mod tests {
     fn keeper_prefers_natural_then_oldest() {
         let t = |y: u64| SystemTime::UNIX_EPOCH + Duration::from_secs((y - 1970) * 31_536_000);
         let f = |p: &str, y| DupFile { path: p.into(), modified: t(y) };
-        let k = Keep { natural: vec!["Videos".into()], loose: vec!["Downloads".into()] };
+        let k = Keep { natural: vec![r"C:\Users\x\Videos".into()], loose: vec![r"C:\Users\x\Downloads".into()] };
         let g = Group { size: 1, files: vec![f(r"C:\Users\x\Downloads\v.mp4", 2022), f(r"C:\Users\x\Videos\v.mp4", 2023), f(r"D:\Copia\v.mp4", 2024)] };
         assert_eq!(keeper(&g, &k), 1);
         let g = Group { size: 1, files: vec![f(r"D:\Copia\v.mp4", 2024), f(r"D:\Otra\v.mp4", 2023)] };
+        assert_eq!(keeper(&g, &k), 1);
+    }
+
+    #[test]
+    fn backup_named_like_known_is_not_natural() {
+        let t = |s| SystemTime::UNIX_EPOCH + Duration::from_secs(s);
+        let f = |p: &str, y| DupFile { path: p.into(), modified: t(y) };
+        let k = Keep { natural: vec![r"C:\Users\ana\Videos".into()], loose: vec![] };
+        let g = Group { size: 1, files: vec![f(r"D:\Copia\Videos\v.mp4", 1_000), f(r"C:\Users\ana\Videos\v.mp4", 2_000)] };
         assert_eq!(keeper(&g, &k), 1);
     }
 
