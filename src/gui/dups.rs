@@ -176,6 +176,11 @@ fn send_text(st: &State) -> (String, bool) {
 }
 
 /// Los grupos del tipo elegido, el subtítulo y el botón.
+/// Lo que sobra en todos los grupos, para el Resumen; `None` hasta la primera búsqueda.
+pub(super) fn waste() -> Option<u64> {
+    STATE.with_borrow(|st| st.groups.as_ref().map(|g| g.iter().map(Group::waste).sum()))
+}
+
 fn render(app: &AppWindow) {
     let data = app.global::<DupsData>();
     let kind = data.get_kind();
@@ -279,6 +284,7 @@ impl Dups {
                 if !app.get_locked() {
                     STATE.with_borrow_mut(|st| (st.groups, st.shown) = (None, Vec::new()));
                     choose(app);
+                    super::summary::refresh_space(app);
                 }
             })
         });
@@ -289,12 +295,6 @@ impl Dups {
         if let Some(app) = self.app.upgrade() {
             f(&app);
         }
-    }
-
-    /// Lo que sobra en todos los grupos, para el Resumen; `None` hasta la primera búsqueda.
-    #[allow(dead_code)] // Task 12
-    pub(super) fn waste(&self) -> Option<u64> {
-        STATE.with_borrow(|st| st.groups.as_ref().map(|g| g.iter().map(Group::waste).sum()))
     }
 
     /// «Buscar duplicados»: busca en un hilo en las opciones marcadas.
@@ -390,6 +390,7 @@ impl Dups {
         });
         if mine {
             render(app);
+            super::summary::refresh_space(app);
         }
     }
 
@@ -492,6 +493,7 @@ impl Dups {
             if app.global::<DupsData>().get_phase() == 2 {
                 render(app);
             }
+            super::summary::refresh_space(app);
         };
         self.space.send_to_bin(paths, names, size, retry, Some(still), after);
     }

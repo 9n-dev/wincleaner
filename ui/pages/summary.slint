@@ -18,6 +18,7 @@ export struct DriveRow {
 
 export global SummaryData {
     in property <[DriveRow]> drives;
+    in property <string> space-text: "Mira a dónde va cada GB";
     in property <string> clean-total: "—";
     in property <string> clean-text;
     // Las tres tarjetas siguientes las rellenan las secciones Seguridad, Procesos y Programas.
@@ -146,6 +147,24 @@ export component SummaryPage inherits Rectangle {
                 if SummaryData.drives.length == 0: Text {
                     text: "No se han podido leer las unidades.";
                     color: Palette.mu;
+                }
+                HorizontalLayout {
+                    spacing: 14px;
+                    padding-top: 4px;
+
+                    Text {
+                        text: SummaryData.space-text;
+                        color: Palette.mu;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                        overflow: elide;
+                    }
+                    Button {
+                        text: "Ver qué ocupa";
+                        icon: "drive";
+                        kind: ButtonKind.secondary;
+                        clicked => { SummaryData.go(2); }
+                    }
                 }
             }
 

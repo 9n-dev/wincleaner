@@ -14,7 +14,7 @@
 
 ## ✨ Qué es
 
-WinCleaner es una herramienta para dejar Windows limpio y ligero: muestra dónde se va el espacio del disco, libera el que ocupan los archivos temporales y las cachés, y te deja ver y ordenar lo que tienes instalado, en marcha y arrancando con Windows. Es un único `.exe` portable de unos 8,2 MB (8 218 624 B; el límite es 8 MiB), sin instalación, sin telemetría y con la interfaz en español. Funciona en Windows 10 1809 o posterior y en Windows 11.
+WinCleaner es una herramienta para dejar Windows limpio y ligero: muestra dónde se va el espacio del disco, libera el que ocupan los archivos temporales y las cachés, y te deja ver y ordenar lo que tienes instalado, en marcha y arrancando con Windows. Es un único `.exe` portable de unos 9,3 MB (9 308 672 B), sin instalación, sin telemetría y con la interfaz en español. Funciona en Windows 10 1809 o posterior y en Windows 11.
 
 ![Resumen de WinCleaner](docs/wcv2-inicio.png)
 
@@ -24,7 +24,7 @@ WinCleaner es una herramienta para dejar Windows limpio y ligero: muestra dónde
 
 La v2 tiene seis secciones en una barra lateral (con solo iconos por debajo de 1000 px de ancho). Pulsa la marca para ver «Acerca de».
 
-**Resumen.** Espacio libre de cada unidad y un vistazo a lo demás: lo que se puede liberar, procesos, programas y seguridad.
+**Resumen.** Espacio libre de cada unidad y lo que ocupan los juegos y lo que sobra en duplicados, y un vistazo a lo demás: lo que se puede liberar, procesos, programas y seguridad.
 
 **Programas.** Lista de lo instalado, con icono, tamaño y fecha, con búsqueda y orden. «Desinstalar» pide confirmación y ejecuta el desinstalador del propio programa; WinCleaner espera a que termine y refresca la lista.
 
@@ -32,7 +32,14 @@ La v2 tiene seis secciones en una barra lateral (con solo iconos por debajo de 1
 
 **Seguridad.** Estado de Microsoft Defender (activo, edad de las firmas), análisis rápido o completo que se puede cancelar, detecciones recientes y comprobaciones propias de solo lectura: programas de arranque, procesos, servicios y tareas programadas de inicio en sitios raros o sin firma, procesos de sistema falsos, archivo `hosts` y proxy. Cada hallazgo explica por qué importa y, según el caso, permite desactivar el inicio, terminar el proceso, abrir su ubicación o buscar su nombre en internet. Si una comprobación no se ha podido hacer, se dice.
 
-**Analizar.** Elige una unidad y WinCleaner lista las 50 carpetas y los 50 archivos más grandes, con un botón para abrir su ubicación en el Explorador. Se puede detener. Las carpetas se muestran sin repetir la cadena de antecesoras, para que se vea dónde se concentra el espacio.
+**Espacio.** Dónde se va el disco, en cuatro pestañas:
+
+- **Carpetas.** Elige una unidad y WinCleaner analiza su árbol (se puede detener): entras y sales de las carpetas, ves qué ocupa cada una y puedes abrirla en el Explorador. Las que tienen juegos dentro llevan la pastilla «Juegos».
+- **Juegos.** Los de Steam, Epic, GOG, Battle.net y Xbox, con su tamaño y cuándo los jugaste. «Desinstalar» abre el lanzador o la Configuración de Windows, nunca borra por su cuenta.
+- **Duplicados.** Busca archivos idénticos en tus carpetas o en la unidad que elijas; conserva una copia de cada grupo (por defecto, la de la carpeta conocida) y marca las demás.
+- **Instaladores viejos.** Los `.exe`, `.msi` e imágenes de Descargas y Escritorio, con los de más de 30 días marcados y los que ya tienes instalados señalados.
+
+Borrar desde Espacio siempre manda a la papelera (con «Deshacer»); solo «Borrar del todo…» es definitivo y pide escribir BORRAR. Hay zonas protegidas que no se pueden borrar: `Windows`, `Program Files`, `Users\Public`, la carpeta Documentos, la propia carpeta de WinCleaner y las carpetas con juegos. Se ven, pero sin casilla ni botón de borrar.
 
 **Limpiar.** Nueve categorías, cada una con su casilla y su tamaño (bytes y archivos) antes de borrar:
 

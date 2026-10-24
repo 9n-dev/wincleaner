@@ -48,6 +48,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     data.set_procs_text("11 programas arrancan con Windows".into());
     data.set_programs_title("86 instalados · 38,2 GB".into());
     data.set_programs_text("El más grande: Steam (12,4 GB)".into());
+    data.set_space_text("382 GB en juegos · sobran 18,6 GB en duplicados".into());
     for (suffix, w, h) in [("", 1100, 720), ("-min", 880, 600)] {
         guarda(&format!("wcv2-inicio{suffix}"), &headless::render(app.window(), w, h), w, h)?;
     }

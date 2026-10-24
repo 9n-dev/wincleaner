@@ -30,6 +30,11 @@ thread_local! {
     static STATE: RefCell<State> = RefCell::default();
 }
 
+/// Lo que ocupan los juegos, para el Resumen; `None` hasta la primera lectura.
+pub(super) fn total() -> Option<u64> {
+    STATE.with_borrow(|st| st.games.as_deref().map(sum))
+}
+
 fn sum(games: &[Game]) -> u64 {
     games.iter().filter_map(|g| g.size).sum()
 }
@@ -93,12 +98,6 @@ impl Games {
         g
     }
 
-    /// Lo que ocupan los juegos, para el Resumen; `None` hasta la primera lectura.
-    #[allow(dead_code)] // Task 12
-    pub(super) fn total(&self) -> Option<u64> {
-        STATE.with_borrow(|st| st.games.as_deref().map(sum))
-    }
-
     /// Lee la lista en un hilo y, después, en el mismo hilo, mide los juegos que no dicen su tamaño.
     /// La lista de antes se queda hasta que llega la nueva. También al entrar en la pestaña.
     pub(super) fn load(&self) {
@@ -131,6 +130,7 @@ impl Games {
         data.set_selected(-1);
         data.set_phase(1);
         STATE.with_borrow_mut(|st| st.games = Some(games));
+        super::summary::refresh_space(app);
     }
 
     /// El juego `i` ya tiene tamaño: se rehace su fila (sin tocar la selección) y el total.
@@ -145,6 +145,7 @@ impl Games {
         let data = app.global::<GamesData>();
         data.get_rows().set_row_data(i, r);
         data.set_subtitle(sub.into());
+        super::summary::refresh_space(app);
     }
 
     /// «Desinstalar» en la fila `i`: pregunta y abre el lanzador, Configuración o Programas.
