@@ -3,6 +3,8 @@
 pub mod defender;
 pub mod icon;
 pub mod proc;
+#[allow(dead_code)] // se usa desde la Task 5
+pub mod recycle;
 pub mod reg;
 pub mod services;
 pub mod startup;
@@ -49,6 +51,8 @@ use winapi::um::winuser::SW_SHOWNORMAL;
 
 use wincleaner::categories::Env;
 use wincleaner::checks::{self, Places};
+use wincleaner::paths::{is_valid, strip_verbatim};
+use wincleaner::space::zones::Zones;
 
 // winapi 0.3.9 no declara IsUserAnAdmin, aunque shell32 la exporta.
 #[link(name = "shell32")]
@@ -320,21 +324,75 @@ fn wide(s: impl AsRef<OsStr>) -> Vec<u16> {
     s.as_ref().encode_wide().chain(once(0)).collect()
 }
 
-fn known_folder(id: &GUID) -> Option<PathBuf> {
-    let mut p: PWSTR = null_mut();
-    // SAFETY: `p` recibe un búfer de CoTaskMemAlloc (o nulo) que liberamos abajo.
-    let hr = unsafe { SHGetKnownFolderPath(id, 0, null_mut(), &mut p) };
-    let out = (hr == S_OK && !p.is_null()).then(|| {
-        // SAFETY: con S_OK, `p` es una cadena UTF-16 terminada en nulo.
+/// Lee y libera una cadena que ha dejado Windows con CoTaskMemAlloc; `None` si es nula.
+///
+/// # Safety
+/// `p` es nulo o una cadena UTF-16 terminada en nulo de CoTaskMemAlloc que pasa a ser nuestra.
+pub(crate) unsafe fn take_co_str(p: PWSTR) -> Option<PathBuf> {
+    let out = (!p.is_null()).then(|| {
+        // SAFETY: `p` es una cadena UTF-16 terminada en nulo.
         let s = unsafe {
             let len = (0..).take_while(|&i| *p.add(i) != 0).count();
             std::slice::from_raw_parts(p, len)
         };
         PathBuf::from(OsString::from_wide(s))
     });
-    // SAFETY: hay que liberarlo también si falla; CoTaskMemFree acepta nulo.
+    // SAFETY: es nuestra y solo se libera aquí; CoTaskMemFree acepta nulo.
     unsafe { CoTaskMemFree(p.cast()) };
     out
+}
+
+fn known_folder(id: &GUID) -> Option<PathBuf> {
+    let mut p: PWSTR = null_mut();
+    // SAFETY: `p` recibe un búfer de CoTaskMemAlloc (o nulo) que hay que liberar también si falla.
+    let hr = unsafe { SHGetKnownFolderPath(id, 0, null_mut(), &mut p) };
+    // SAFETY: lo que deja SHGetKnownFolderPath es nuestro; con S_OK es una cadena terminada en nulo.
+    let out = unsafe { take_co_str(p) };
+    out.filter(|_| hr == S_OK)
+}
+
+/// Las seis carpetas del usuario con su nombre en español; las que no se pueden leer no salen.
+#[allow(dead_code)] // se usa desde la Task 5
+pub fn known_dirs() -> Vec<(PathBuf, &'static str)> {
+    [
+        (&FOLDERID_Documents, "Documentos"),
+        (&FOLDERID_Desktop, "Escritorio"),
+        (&FOLDERID_Downloads, "Descargas"),
+        (&FOLDERID_Pictures, "Imágenes"),
+        (&FOLDERID_Music, "Música"),
+        (&FOLDERID_Videos, "Vídeos"),
+    ]
+    .into_iter()
+    .filter_map(|(id, label)| known_folder(id).map(|p| (p, label)))
+    .collect()
+}
+
+/// Zonas protegidas de Espacio. `None` (no se puede borrar nada) si falta el perfil, Windows
+/// o la ruta del `.exe`: fallo cerrado.
+#[allow(dead_code)] // se usa desde la Task 5
+pub fn space_zones(games: &[String]) -> Option<Zones> {
+    let text = |p: PathBuf| p.to_string_lossy().into_owned();
+    let profile = text(known_folder(&FOLDERID_Profile)?);
+    let windows = text(known_folder(&FOLDERID_Windows)?);
+    // Nombre largo y sin `\\?\`, para que se pueda comparar con las rutas del árbol.
+    let exe = text(long_path(&std::env::current_exe().ok()?));
+    let exe = strip_verbatim(&exe).unwrap_or(&exe).to_string();
+    if !is_valid(&exe) {
+        return None;
+    }
+    let mut system = vec![windows];
+    system.extend(
+        [&FOLDERID_ProgramFiles, &FOLDERID_ProgramFilesX86, &FOLDERID_ProgramData]
+            .into_iter()
+            .filter_map(known_folder)
+            .map(text),
+    );
+    let mut known: Vec<(String, &'static str)> = known_dirs().into_iter().map(|(p, l)| (text(p), l)).collect();
+    // `AppData` es la carpeta padre de Roaming.
+    if let Some(app_data) = known_folder(&FOLDERID_RoamingAppData).and_then(|r| r.parent().map(Path::to_path_buf)) {
+        known.push((text(app_data), "AppData"));
+    }
+    Some(Zones::new(&drive_roots(), &system, &profile, &known, &exe, games))
 }
 
 pub(crate) fn long_path(p: &Path) -> PathBuf {
