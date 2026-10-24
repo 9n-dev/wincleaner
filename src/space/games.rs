@@ -80,8 +80,16 @@ pub fn steam_game(acf_text: &str, library: &str) -> Option<Game> {
         return None;
     }
     let installdir = s.get("installdir")?.str()?;
+    let d = installdir.trim();
+    if d.is_empty() || d == "." || d == ".." || d.contains(['\\', '/', ':']) {
+        return None;
+    }
+    let name = s.get("name")?.str()?;
+    if name.trim().is_empty() {
+        return None;
+    }
     Some(Game {
-        name: s.get("name")?.str()?.to_string(),
+        name: name.to_string(),
         launcher: Launcher::Steam,
         dir: Some(format!("{library}\\steamapps\\common\\{installdir}")),
         size: num(s.get("SizeOnDisk")),
@@ -215,6 +223,16 @@ mod tests {
         let flags = ACF.replace("\"StateFlags\"\t\t\"4\"", "\"StateFlags\"\t\t\"2\"");
         assert!(steam_game(&flags, "D:").is_none());
         assert!(steam_game("basura {", "D:").is_none());
+    }
+
+    #[test]
+    fn acf_bad_installdir_skipped() {
+        for bad in ["", "..", r"..\\..", r"a\\b", "C:x"] {
+            let t = ACF.replace("Baldurs Gate 3\"", &format!("{}\"", bad));
+            assert!(steam_game(&t, "D:").is_none(), "{bad}");
+        }
+        let t = ACF.replace("Baldur's Gate 3", "");
+        assert!(steam_game(&t, "D:").is_none());
     }
 
     #[test]
