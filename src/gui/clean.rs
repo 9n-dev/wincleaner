@@ -305,6 +305,7 @@ impl Clean {
             note: "Los archivos en uso se saltarán. Esto no se puede deshacer.",
             confirm_text: "Borrar",
             danger: true,
+            alt_text: "",
         };
         confirm(&app, ask, move || k.clean(generation, &sel));
     }

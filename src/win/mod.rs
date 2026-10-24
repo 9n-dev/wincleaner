@@ -3,7 +3,6 @@
 pub mod defender;
 pub mod icon;
 pub mod proc;
-#[allow(dead_code)] // se usa desde la Task 6
 pub mod recycle;
 pub mod reg;
 pub mod services;

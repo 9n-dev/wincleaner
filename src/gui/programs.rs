@@ -218,6 +218,7 @@ impl Programs {
             note: "",
             confirm_text: "Abrir desinstalador",
             danger: true,
+            alt_text: "",
         };
         confirm(&app, ask, move || k.start(hive, key));
     }

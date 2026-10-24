@@ -65,8 +65,6 @@ export global SpaceData {
     in property <string> lock-text;
     // Hay carpetas sin acceso en la carpeta actual.
     in property <bool> denied;
-    // false si no se pudieron leer las zonas protegidas: no sale ningún botón de borrar.
-    in property <bool> can-delete-any;
     // Aviso de resultado: 0 nada, 1 ok, 2 error.
     in property <int> note;
     in property <string> note-title;
@@ -284,7 +282,7 @@ component SpaceItem {
             }
         }
         Text {
-            width: 70px;
+            width: root.compact ? 64px : 70px;
             text: root.item.size;
             color: Palette.tx;
             font-weight: 600;
@@ -292,7 +290,7 @@ component SpaceItem {
             vertical-alignment: center;
         }
         Text {
-            width: 46px;
+            width: root.compact ? 38px : 46px;
             text: root.item.pct;
             color: Palette.fa;
             horizontal-alignment: right;
@@ -305,7 +303,7 @@ component SpaceItem {
                 alignment: center;
                 Button {
                     icon: "folder";
-                    accessible-label: "Abrir en el Explorador";
+                    tip: "Abrir en el Explorador";
                     clicked => { root.open(); }
                 }
             }
@@ -314,7 +312,7 @@ component SpaceItem {
                 Button {
                     text: root.compact ? "" : "Papelera";
                     icon: "trash";
-                    accessible-label: "Enviar a la papelera";
+                    tip: "Papelera";
                     clicked => { root.recycle(); }
                 }
             }
@@ -411,7 +409,7 @@ export component SpacePage inherits Rectangle {
             }
             Button {
                 icon: "x";
-                accessible-label: "Cerrar aviso";
+                tip: "Cerrar aviso";
                 clicked => { SpaceData.dismiss(); }
             }
         }
@@ -471,7 +469,7 @@ export component SpacePage inherits Rectangle {
 
             Button {
                 icon: "back";
-                accessible-label: "Volver";
+                tip: "Volver";
                 clicked => { SpaceData.up(); }
             }
             for c[i] in SpaceData.crumbs: HorizontalLayout {

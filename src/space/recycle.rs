@@ -1,6 +1,9 @@
 //! Papelera: ruta del `$I` de un `$R`, motivos de fallo y textos del resultado.
 
+use std::path::PathBuf;
+
 use crate::format::bytes;
+use crate::paths::{is_inside, same};
 
 /// `$R…` → `$I…` en la misma carpeta, solo si esa carpeta es la de un usuario dentro de
 /// `$Recycle.Bin` (`X:\$Recycle.Bin\<SID>\$R…`).
@@ -47,10 +50,7 @@ pub struct Outcome {
 /// `(ok, título, texto)` del aviso que sale al terminar de enviar a la papelera o de borrar
 /// del todo (`purge`). Si ha fallado algo, el texto explica el motivo más importante.
 pub fn outcome_text(o: &Outcome, purge: bool) -> (bool, String, String) {
-    let what = match o.names.as_slice() {
-        [one] => one.clone(),
-        names => format!("{} elementos", names.len()),
-    };
+    let what = what(&o.names);
     if o.failed.is_empty() {
         return match (purge, o.names.len() == 1) {
             (false, one) => (
@@ -111,6 +111,41 @@ pub fn outcome_text(o: &Outcome, purge: bool) -> (bool, String, String) {
     }
     let paren = if parts.is_empty() { String::new() } else { format!(" ({})", parts.join("; ")) };
     (false, title, format!("{cause}{rest}{paren}. {advice}"))
+}
+
+/// Posiciones de `items` que hay que enviar: sin repetidos (se queda el primero) ni lo que está
+/// dentro de otro de la lista, que ya va con él. Una ruta no Unicode se deja (la papelera la rechaza).
+// ponytail: O(n²) comparaciones; ordenar por ruta si llegan decenas de miles.
+pub fn outermost(items: &[PathBuf]) -> Vec<usize> {
+    let s: Vec<Option<&str>> = items.iter().map(|p| p.to_str()).collect();
+    (0..items.len())
+        .filter(|&i| {
+            let Some(a) = s[i] else { return true };
+            !s.iter().enumerate().any(|(j, b)| b.is_some_and(|b| (j < i && same(a, b)) || is_inside(a, b)))
+        })
+        .collect()
+}
+
+/// «Uno» o «N elementos».
+fn what(names: &[String]) -> String {
+    match names {
+        [one] => one.clone(),
+        names => format!("{} elementos", names.len()),
+    }
+}
+
+/// `(ok, título, texto)` del aviso al deshacer: `failed`, los nombres de lo que no ha vuelto.
+pub fn undo_text(names: &[String], failed: &[String]) -> (bool, String, String) {
+    match failed {
+        [] if names.len() == 1 => (true, format!("Restaurado: {}.", what(names)), String::new()),
+        [] => (true, format!("Restaurados: {}.", what(names)), String::new()),
+        [one] => (false, format!("No se ha podido restaurar «{one}»."), "Búscalo en la papelera.".into()),
+        many => (
+            false,
+            format!("No se han podido restaurar {} elementos: {}.", many.len(), many.join(", ")),
+            "Búscalos en la papelera.".into(),
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -191,6 +226,32 @@ mod tests {
         assert!(!ok);
         assert!(text.contains("no cabe en la papelera"), "{text}");
         assert!(text.contains("Borrar del todo…"), "{text}");
+    }
+
+    #[test]
+    fn outermost_drops_duplicates_and_nested() {
+        let items: Vec<PathBuf> = [r"C:\a\x.iso", r"C:\b", r"c:/a/x.iso", r"C:\b\c\d.txt", r"C:\bb", r"C:\b\"]
+            .iter()
+            .map(PathBuf::from)
+            .collect();
+        assert_eq!(outermost(&items), [0, 1, 4]);
+        assert_eq!(outermost(&[]), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn undo_texts() {
+        let names = vec!["boda_prima_4K.mov".to_string()];
+        assert_eq!(undo_text(&names, &[]), (true, "Restaurado: boda_prima_4K.mov.".into(), String::new()));
+        assert_eq!(
+            undo_text(&names, &names),
+            (false, "No se ha podido restaurar «boda_prima_4K.mov».".into(), "Búscalo en la papelera.".into())
+        );
+        let many: Vec<String> = ["a", "b", "c"].map(String::from).to_vec();
+        assert_eq!(undo_text(&many, &[]).1, "Restaurados: 3 elementos.");
+        assert_eq!(
+            undo_text(&many, &many[1..]),
+            (false, "No se han podido restaurar 2 elementos: b, c.".into(), "Búscalos en la papelera.".into())
+        );
     }
 
     #[test]

@@ -121,7 +121,9 @@ pub fn send(items: &[PathBuf], zones: &Zones) -> Report {
     rep
 }
 
-fn vetted(p: &Path, zones: &Zones) -> bool {
+/// Se puede tocar: las zonas no la bloquean, no es un enlace y su ruta final es la escrita
+/// (sin un junction por medio) y tampoco está bloqueada.
+pub fn vetted(p: &Path, zones: &Zones) -> bool {
     let Some(s) = p.to_str() else { return false };
     zones.check(s).is_none()
         && std::fs::symlink_metadata(p).is_ok_and(|md| !is_link(&md))

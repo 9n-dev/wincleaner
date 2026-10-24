@@ -153,7 +153,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     data.set_progress("212 GB de 412 GB · 684 210 archivos · 1 min 05 s".into());
     data.set_progress_value(0.51);
     data.set_current("C:\\Users\\ana\\AppData\\Local\\Packages\\…".into());
-    data.set_can_delete_any(true);
     // (icono, nombre, ruta, tamaño en GB, %, color, pastilla, se puede borrar); `total` es la carpeta.
     type Fila<'a> = (&'a str, &'a str, &'a str, f32, &'a str, i32, &'a str, bool);
     let filas = |v: &[Fila], total: f32| {
@@ -236,6 +235,82 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             guarda(&format!("wces-{nombre}{suffix}"), &headless::render(app.window(), w, h), w, h)?;
         }
     }
+
+    // Borrar desde Carpetas: papelera, borrar del todo, hecho y error, en Vídeos.
+    let migas = crumbs(&["Este equipo", "C:", "Usuarios", "ana", "Vídeos"]);
+    let sin_boda = filas(
+        &[
+            ("folder", "OBS", "C:\\Users\\ana\\Videos\\OBS", 41.2, "64 %", 0, "", true),
+            ("folder", "Capturas", "C:\\Users\\ana\\Videos\\Captures", 6.1, "10 %", 1, "", true),
+            ("file", "partida_final.mkv", "02/09/2026", 2.4, "4 %", 2, "", true),
+            ("file", "1 284 archivos más pequeños", "Juntos", 1.5, "2 %", 5, "", false),
+        ],
+        51.2,
+    );
+    let boda = || model(vec![wincleaner::ui::ModalLine { label: "boda_prima_4K.mov".into(), value: "12,8 GB".into() }]);
+    let purge = app.global::<wincleaner::ui::Purge>();
+    data.set_crumbs(migas);
+    data.set_lock_title("".into());
+    data.set_lock_text("".into());
+    for nombre in ["papelera", "borrar-todo", "hecho", "error"] {
+        let (filas, selected) = if nombre == "hecho" { (&sin_boda, -1) } else { (&videos, if nombre == "error" { -1 } else { 1 }) };
+        data.set_rows(filas.0.clone());
+        data.set_strip(filas.1.clone());
+        data.set_selected(selected);
+        data.set_subtitle(
+            match nombre {
+                "hecho" => "C: · 399 GB usados de 476 GB",
+                "error" => "C: · 412 GB usados de 476 GB · analizado hace 2 min",
+                _ => "C: · 412 GB usados de 476 GB",
+            }
+            .into(),
+        );
+        data.set_note(match nombre {
+            "hecho" => 1,
+            "error" => 2,
+            _ => 0,
+        });
+        data.set_note_title(
+            if nombre == "hecho" { "Enviado a la papelera: boda_prima_4K.mov (12,8 GB)." } else { "No se ha podido borrar todo «OBS»." }.into(),
+        );
+        data.set_note_text(
+            if nombre == "hecho" {
+                "Vacía la papelera en «Limpiar» cuando quieras liberar el espacio."
+            } else {
+                "3 archivos están en uso por otro programa (38 GB se han enviado a la papelera; quedan 3,2 GB). \
+                 Cierra los programas que los usen y vuelve a intentarlo."
+            }
+            .into(),
+        );
+        data.set_can_undo(nombre == "hecho");
+        data.set_can_retry(nombre == "error");
+        if nombre == "papelera" {
+            modal.set_title("¿Enviar a la papelera?".into());
+            modal.set_text("".into());
+            modal.set_lines(boda());
+            modal.set_note("Podrás recuperarlo desde la papelera mientras no la vacíes. El espacio no se libera hasta entonces.".into());
+            modal.set_confirm_text("Enviar a la papelera".into());
+            modal.set_danger(false);
+            modal.set_alt_text("Borrar del todo…".into());
+            modal.set_open(true);
+        }
+        if nombre == "borrar-todo" {
+            purge.set_lines(boda());
+            purge.set_text("No pasa por la papelera: se borra ya y libera 12,8 GB al momento.".into());
+            purge.set_open(true);
+            // El campo tiene el foco al abrir: se escribe como el usuario.
+            headless::render(app.window(), 1100, 720);
+            for c in ["B", "O", "R", "R"] {
+                headless::press(app.window(), c.into());
+            }
+        }
+        for (suffix, w, h) in [("", 1100, 720), ("-min", 880, 600)] {
+            guarda(&format!("wces-espacio-{nombre}{suffix}"), &headless::render(app.window(), w, h), w, h)?;
+        }
+        modal.set_open(false);
+        purge.set_open(false);
+    }
+    data.set_note(0);
 
     // Programas, con los datos de `PROGS` de las maquetas.
     use wincleaner::ui::{ProgramRow, ProgramsData};

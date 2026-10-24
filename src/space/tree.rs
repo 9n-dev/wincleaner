@@ -40,6 +40,13 @@ pub struct Node {
     pub odd: bool,
 }
 
+impl Node {
+    /// Se puede entrar: una carpeta leída con nombre Unicode (si no, la ruta no sería exacta).
+    pub fn can_enter(&self) -> bool {
+        self.kind == Kind::Dir && !self.odd
+    }
+}
+
 pub struct Tree {
     nodes: Vec<Node>,
     base: PathBuf,

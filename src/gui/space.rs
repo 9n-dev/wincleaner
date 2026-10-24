@@ -1,20 +1,42 @@
-//! Sección Espacio, pestaña Carpetas: análisis de una unidad en un hilo y árbol navegable.
+//! Sección Espacio, pestaña Carpetas: análisis de una unidad en un hilo, árbol navegable y
+//! borrado (papelera o del todo) con deshacer y reintentar, compartido con las demás pestañas.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use slint::{ComponentHandle, ModelRc, Timer, TimerMode, VecModel, Weak};
-use wincleaner::format;
+use wincleaner::categories::is_link;
+use wincleaner::space::deletable;
+use wincleaner::space::recycle::{Outcome, Reason, outcome_text, outermost, undo_text};
 use wincleaner::space::tree::{Id, Kind, Tree};
 use wincleaner::space::zones::{Block, Zones};
-use wincleaner::ui::{AppWindow, DriveItem, SpaceData, SpaceRow, StripPart};
+use wincleaner::ui::{self, AppWindow, Confirm, DriveItem, ModalLine, SpaceData, SpaceRow, StripPart, confirm_with_alt};
+use wincleaner::{clean, format};
 
 use crate::win;
+use crate::win::recycle::Report;
+
+/// Un análisis concreto: raíz de la unidad y cuándo terminó. Los `Id` solo valen en ese árbol.
+type At = (String, Instant);
+type After = Box<dyn FnOnce(&AppWindow, &Report)>;
+type Retry = Rc<dyn Fn(&Space, &AppWindow)>;
+
+/// Lo que deja el último borrado para «Deshacer» y «Reintentar».
+#[derive(Default)]
+struct Last {
+    names: Vec<String>,
+    binned: Vec<(PathBuf, PathBuf)>,
+    /// Nodos enviados a la papelera, en el árbol `at`: al deshacer vuelven a verse.
+    at: Option<At>,
+    ids: Vec<(PathBuf, Id)>,
+    /// Lo pone quien pidió el borrado, después de pedirlo.
+    retry: Option<Retry>,
+}
 
 #[derive(Default)]
 struct State {
@@ -34,6 +56,9 @@ struct State {
     timer: Option<Timer>,
     /// Refresca «analizado hace X min» cada minuto.
     clock: Timer,
+    last: Last,
+    /// Lo que hace quien pidió el borrado en curso, al volver.
+    after: Option<After>,
 }
 
 thread_local! {
@@ -110,8 +135,8 @@ fn row(tree: &Tree, id: Id, i: usize, total: u64, zones: Option<&Zones>) -> Spac
         color: if i < 5 && n.size > 0 && n.kind != Kind::Rest { i as i32 } else { 5 },
         badge: badge.into(),
         // Un nombre no Unicode no da una ruta exacta: solo se ve.
-        can_enter: n.kind == Kind::Dir && !n.odd,
-        can_delete: zones.is_some() && block.is_none() && !n.odd && matches!(n.kind, Kind::Dir | Kind::File),
+        can_enter: n.can_enter(),
+        can_delete: deletable(n, block, zones.is_some()),
         selectable: n.kind != Kind::Rest,
     }
 }
@@ -241,6 +266,59 @@ fn show(app: &AppWindow) {
     data.set_phase(2);
 }
 
+/// El análisis que se ve.
+fn here(st: &State) -> Option<At> {
+    st.trees.get(&st.root).map(|t| (st.root.clone(), t.1))
+}
+
+/// El árbol de `at`, si sigue siendo ese análisis (no se ha vuelto a analizar).
+fn tree_at<'a>(trees: &'a mut HashMap<String, (Tree, Instant)>, at: &Option<At>) -> Option<&'a mut Tree> {
+    let (root, when) = at.as_ref()?;
+    trees.get_mut(root).filter(|t| t.1 == *when).map(|t| &mut t.0)
+}
+
+/// (ruta, nombre, tamaño) del nodo `id` de `at` si todavía se puede borrar.
+fn target(st: &mut State, at: &At, id: Id) -> Option<(PathBuf, String, u64)> {
+    let State { trees, zones, .. } = st;
+    let tree = tree_at(trees, &Some(at.clone()))?;
+    let n = tree.node(id);
+    let path = tree.path(id);
+    let zones = zones.as_ref();
+    let block = zones.and_then(|z| z.check(&path.to_string_lossy()));
+    (!n.gone && deletable(n, block, zones.is_some())).then(|| (path, name(tree, id, zones), n.size))
+}
+
+/// Sigue ahí, aunque no se pueda leer: solo `NotFound` cuenta como borrado.
+fn exists(p: &Path) -> bool {
+    !matches!(std::fs::symlink_metadata(p), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+}
+
+/// Borra del todo lo que pase las zonas sobre la ruta escrita y la final; lo demás es `Protected`.
+/// Lo que sigue en pie después falla con un motivo genérico (`purge` no dice cuál).
+fn purge_all(items: &[PathBuf], zones: &Zones) -> Report {
+    let mut rep = Report::default();
+    for p in items {
+        if !win::recycle::vetted(p, zones) {
+            rep.failed.push((p.clone(), Reason::Protected));
+            continue;
+        }
+        clean::purge(p);
+        if exists(p) {
+            rep.failed.push((p.clone(), Reason::Other(0)));
+        }
+    }
+    rep
+}
+
+fn set_note(app: &AppWindow, (ok, title, text): (bool, String, String), undo: bool, retry: bool) {
+    let data = app.global::<SpaceData>();
+    data.set_note(if ok { 1 } else { 2 });
+    data.set_note_title(title.into());
+    data.set_note_text(text.into());
+    data.set_can_undo(undo);
+    data.set_can_retry(retry);
+}
+
 #[derive(Clone)]
 pub struct Space(Weak<AppWindow>);
 
@@ -249,7 +327,6 @@ impl Space {
         let c = Space(app.as_weak());
         let data = app.global::<SpaceData>();
         let zones = win::space_zones(&[]);
-        data.set_can_delete_any(zones.is_some());
         let weak = app.as_weak();
         STATE.with_borrow_mut(|st| {
             st.zones = zones;
@@ -279,8 +356,7 @@ impl Space {
             k.go(|st| {
                 let (tree, _) = st.trees.get(&st.root)?;
                 let id = *st.kids.get(usize::try_from(i).ok()?)?;
-                let n = tree.node(id);
-                (n.kind == Kind::Dir && !n.odd).then_some(id)
+                tree.node(id).can_enter().then_some(id)
             })
         });
         let k = c.clone();
@@ -308,12 +384,28 @@ impl Space {
                 win::open_in_explorer(&p);
             }
         });
-        // Task 6: enviar a la papelera, deshacer y reintentar.
-        data.on_recycle(|_| {});
-        data.on_undo(|| {});
-        data.on_retry(|| {});
         let k = c.clone();
-        data.on_dismiss(move || k.with(|app| app.global::<SpaceData>().set_note(0)));
+        data.on_recycle(move |i| k.with(|app| k.recycle(app, i)));
+        let k = c.clone();
+        data.on_undo(move || k.with(|app| k.undo(app)));
+        let k = c.clone();
+        data.on_retry(move || {
+            k.with(|app| {
+                let retry = STATE.with_borrow(|st| st.last.retry.clone());
+                if let Some(f) = retry.filter(|_| !app.get_locked()) {
+                    f(&k, app);
+                }
+            })
+        });
+        let k = c.clone();
+        data.on_dismiss(move || {
+            k.with(|app| {
+                if !app.get_locked() {
+                    STATE.with_borrow_mut(|st| st.last = Last::default());
+                    app.global::<SpaceData>().set_note(0);
+                }
+            })
+        });
         c
     }
 
@@ -349,7 +441,7 @@ impl Space {
     /// Analiza `root` en un hilo. El análisis anterior de esa unidad se descarta ya: así no hay
     /// dos árboles en memoria.
     fn start(&self, app: &AppWindow, root: String) {
-        if root.is_empty() || STATE.with_borrow(|st| st.cancel.is_some()) {
+        if root.is_empty() || app.get_locked() || STATE.with_borrow(|st| st.cancel.is_some()) {
             return;
         }
         let used = STATE.with_borrow(|st| st.drives.iter().find(|d| d.root == root).map_or(0, used));
@@ -427,5 +519,178 @@ impl Space {
         let data = app.global::<SpaceData>();
         data.set_lock_title(title.into());
         data.set_lock_text(text.into());
+    }
+
+    /// «Papelera» en la fila `i`: pregunta, con «Borrar del todo…» como alternativa.
+    fn recycle(&self, app: &AppWindow, i: i32) {
+        if app.get_locked() {
+            return;
+        }
+        let Some((at, id, (_, name, size))) = STATE.with_borrow_mut(|st| {
+            let id = *st.kids.get(usize::try_from(i).ok()?)?;
+            let at = here(st)?;
+            let t = target(st, &at, id)?;
+            Some((at, id, t))
+        }) else {
+            return;
+        };
+        let lines = vec![ModalLine { label: name.into(), value: format::bytes(size).into() }];
+        let ask = Confirm {
+            title: "¿Enviar a la papelera?",
+            text: "",
+            lines: lines.clone(),
+            note: "Podrás recuperarlo desde la papelera mientras no la vacíes. El espacio no se libera hasta entonces.",
+            confirm_text: "Enviar a la papelera",
+            danger: false,
+            alt_text: "Borrar del todo…",
+        };
+        let (k, at2) = (self.clone(), at.clone());
+        let on_ok = move || k.with(|app| k.trash(app, at, id, false));
+        let k = self.clone();
+        let on_alt = move || {
+            k.with(|app| {
+                let text = format!("No pasa por la papelera: se borra ya y libera {} al momento.", format::bytes(size));
+                let k2 = k.clone();
+                ui::purge(app, lines, &text, move || k2.with(|app| k2.trash(app, at2, id, true)));
+            })
+        };
+        confirm_with_alt(app, ask, on_ok, on_alt);
+    }
+
+    /// Envía a la papelera (o borra del todo) el nodo `id` de `at`, si se sigue pudiendo.
+    fn trash(&self, app: &AppWindow, at: At, id: Id, purge: bool) {
+        if app.get_locked() {
+            return;
+        }
+        let Some((path, name, size)) = STATE.with_borrow_mut(|st| target(st, &at, id)) else { return };
+        let gone = Some(at.clone());
+        let after = move |_: &AppWindow, rep: &Report| {
+            if rep.failed.is_empty() {
+                STATE.with_borrow_mut(|st| tree_at(&mut st.trees, &gone).map(|t| t.remove(id)));
+            }
+        };
+        if purge {
+            self.delete(true, vec![path], vec![name], size, Box::new(after));
+        } else {
+            self.send_to_bin(vec![path], vec![name], size, after);
+        }
+        let retry: Retry = Rc::new(move |k, app| k.trash(app, at.clone(), id, purge));
+        STATE.with_borrow_mut(|st| st.last.retry = Some(retry));
+    }
+
+    /// Envía `items` a la papelera en un hilo, con la ventana bloqueada. `names` va en paralelo a
+    /// `items` y `size` es lo que suman. Al volver, rehace lo que falló en el árbol, llama a
+    /// `after` (lo que no está en `failed` ya no existe), rellena el aviso y desbloquea.
+    /// Para «Reintentar», quien llama pone `STATE.last.retry` después.
+    pub(super) fn send_to_bin(&self, items: Vec<PathBuf>, names: Vec<String>, size: u64, after: impl FnOnce(&AppWindow, &Report) + 'static) {
+        self.delete(false, items, names, size, Box::new(after));
+    }
+
+    fn delete(&self, purge: bool, items: Vec<PathBuf>, names: Vec<String>, size: u64, after: After) {
+        let Some(app) = self.0.upgrade().filter(|a| !a.get_locked()) else { return };
+        let Some(zones) = STATE.with_borrow(|st| st.zones.clone()) else { return };
+        // Sin repetidos ni lo que ya va dentro de otro.
+        let keep = outermost(&items);
+        let names = if names.len() == items.len() { keep.iter().map(|&i| names[i].clone()).collect() } else { names };
+        let items: Vec<PathBuf> = keep.iter().map(|&i| items[i].clone()).collect();
+        // Un borrado nuevo sustituye al aviso anterior y pierde su deshacer.
+        let at = STATE.with_borrow_mut(|st| {
+            st.last = Last::default();
+            st.after = Some(after);
+            here(st)
+        });
+        app.global::<SpaceData>().set_note(0);
+        app.set_locked(true);
+        let k = self.clone();
+        std::thread::spawn(move || {
+            let mut rep = if purge { purge_all(&items, &zones) } else { win::recycle::send(&items, &zones) };
+            // Lo que ya no existe (otro programa lo borró antes) está hecho.
+            rep.failed.retain(|(p, _)| exists(p));
+            // Lo que queda de cada fallo: una carpeta se vuelve a leer para el árbol.
+            let (mut left, mut scans) = (0, Vec::new());
+            for (p, _) in &rep.failed {
+                match std::fs::symlink_metadata(p) {
+                    Ok(md) if md.is_dir() && !is_link(&md) => {
+                        if let Some(t) = Tree::scan(p, &AtomicBool::new(false), &mut |_, _, _| {}) {
+                            left += t.node(t.root()).size;
+                            scans.push((p.clone(), t));
+                        }
+                    }
+                    Ok(md) => left += md.len(),
+                    Err(_) => {}
+                }
+            }
+            let failed = rep.failed.iter().map(|f| f.1).collect();
+            let outcome = Outcome { names, sent: size.saturating_sub(left), left, failed };
+            let _ = k.0.upgrade_in_event_loop(move |app| Self::deleted(&app, purge, at, rep, scans, outcome));
+        });
+    }
+
+    fn deleted(app: &AppWindow, purge: bool, at: Option<At>, rep: Report, scans: Vec<(PathBuf, Tree)>, outcome: Outcome) {
+        let after = STATE.with_borrow_mut(|st| {
+            if let Some(tree) = tree_at(&mut st.trees, &at) {
+                for (p, t) in scans {
+                    if let Some(id) = tree.find(&p) {
+                        tree.graft(id, t);
+                    }
+                }
+                st.last.ids = rep.binned.iter().filter_map(|(p, _)| Some((p.clone(), tree.find(p)?))).collect();
+            }
+            st.after.take()
+        });
+        if let Some(f) = after {
+            f(app, &rep);
+        }
+        let undo = !rep.binned.is_empty();
+        let retry = STATE.with_borrow_mut(|st| {
+            st.last.at = at;
+            st.last.names = outcome.names.clone();
+            st.last.binned = rep.binned;
+            st.last.retry.is_some()
+        });
+        set_note(app, outcome_text(&outcome, purge), undo, retry && !outcome.failed.is_empty());
+        app.set_locked(false);
+        units(app);
+        show(app);
+    }
+
+    /// «Deshacer»: devuelve lo enviado a la papelera, en un hilo.
+    fn undo(&self, app: &AppWindow) {
+        if app.get_locked() {
+            return;
+        }
+        let Last { names, binned, at, ids, .. } = STATE.with_borrow_mut(|st| std::mem::take(&mut st.last));
+        if binned.is_empty() {
+            return;
+        }
+        app.global::<SpaceData>().set_note(0);
+        app.set_locked(true);
+        let k = self.clone();
+        std::thread::spawn(move || {
+            let failed = win::recycle::undo(&binned);
+            let _ = k.0.upgrade_in_event_loop(move |app| Self::undone(&app, names, at, ids, failed));
+        });
+    }
+
+    fn undone(app: &AppWindow, names: Vec<String>, at: Option<At>, ids: Vec<(PathBuf, Id)>, failed: Vec<PathBuf>) {
+        STATE.with_borrow_mut(|st| {
+            if let Some(tree) = tree_at(&mut st.trees, &at) {
+                for (p, id) in &ids {
+                    if !failed.contains(p) {
+                        tree.restore(*id);
+                    }
+                }
+            }
+        });
+        // Con un solo elemento, su nombre de la lista («Vídeos»); si no, el del archivo.
+        let failed: Vec<String> = if failed.len() == 1 && names.len() == 1 {
+            names.clone()
+        } else {
+            failed.iter().map(|p| p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into())).collect()
+        };
+        set_note(app, undo_text(&names, &failed), false, false);
+        app.set_locked(false);
+        units(app);
+        show(app);
     }
 }
