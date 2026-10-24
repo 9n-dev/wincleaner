@@ -35,6 +35,9 @@ pub struct Node {
     pub mtime: u32,
     pub kind: Kind,
     pub gone: bool,
+    /// El nombre no es Unicode válido y `name` es una versión con U+FFFD: se muestra, pero la ruta
+    /// no es exacta, así que nunca se borra ni se entra (una carpeta así es `Denied`).
+    pub odd: bool,
 }
 
 pub struct Tree {
@@ -53,10 +56,14 @@ fn mtime(md: &std::fs::Metadata) -> u32 {
 }
 
 type Kid = (Box<str>, Kind, u64, u32);
+/// Hijos de una carpeta y posiciones de los de nombre no Unicode.
+/// (tamaño, nombre, mtime, nombre no Unicode).
+type Small = (u64, Box<str>, u32, bool);
+type Read = (Vec<Kid>, Vec<usize>);
 
 impl Tree {
     pub fn new(root_name: &str) -> Tree {
-        let root = Node { name: root_name.into(), parent: 0, first: 0, len: 0, size: 0, mtime: 0, kind: Kind::Dir, gone: false };
+        let root = Node { name: root_name.into(), parent: 0, first: 0, len: 0, size: 0, mtime: 0, kind: Kind::Dir, gone: false, odd: false };
         Tree { nodes: vec![root], base: PathBuf::from(root_name), files: 0 }
     }
 
@@ -74,8 +81,11 @@ impl Tree {
             if t.nodes[i].kind == Kind::Dir {
                 let dir = t.path(i as Id);
                 match read_kids(&dir, &mut files, &mut bytes, progress) {
-                    Ok(kids) => {
-                        t.add_children(i as Id, kids);
+                    Ok((kids, odd)) => {
+                        let first = t.add_children(i as Id, kids);
+                        for k in odd {
+                            t.nodes[first as usize + k].odd = true;
+                        }
                     }
                     Err(true) => t.nodes[i].kind = Kind::Denied,
                     Err(false) => {}
@@ -101,7 +111,7 @@ impl Tree {
                 Kind::Rest => m as u64,
                 _ => 0,
             };
-            self.nodes.push(Node { name, parent, first: 0, len, size, mtime, kind, gone: false });
+            self.nodes.push(Node { name, parent, first: 0, len, size, mtime, kind, gone: false, odd: false });
         }
         first
     }
@@ -122,6 +132,7 @@ impl Tree {
         0
     }
 
+    /// Archivos leídos por el escaneo: cifra histórica que `remove`, `restore`, `graft` y `forget` no cambian.
     pub fn files(&self) -> u64 {
         self.files
     }
@@ -154,10 +165,19 @@ impl Tree {
     }
 
     pub fn find(&self, path: &Path) -> Option<Id> {
+        self.lookup(path, false)
+    }
+
+    fn lookup(&self, path: &Path, with_gone: bool) -> Option<Id> {
         let mut cur = 0;
         for c in path.strip_prefix(&self.base).ok()?.components() {
             let name = c.as_os_str().to_str()?;
-            cur = self.children(cur).into_iter().find(|&k| self.node(k).kind != Kind::Rest && &*self.node(k).name == name)?;
+            let n = self.node(cur);
+            let mut kids = n.first..n.first + if n.kind == Kind::Dir { n.len } else { 0 };
+            cur = kids.find(|&k| {
+                let k = self.node(k);
+                k.kind != Kind::Rest && !k.odd && (with_gone || !k.gone) && &*k.name == name
+            })?;
         }
         Some(cur)
     }
@@ -212,7 +232,6 @@ impl Tree {
         let n = &mut self.nodes[id as usize];
         let old = n.size;
         (n.first, n.len, n.kind) = (if r.len > 0 { shift(r.first) } else { 0 }, r.len, r.kind);
-        self.files += sub.files;
         if r.size >= old {
             self.bump(id, |x| x + (r.size - old));
         } else {
@@ -223,12 +242,12 @@ impl Tree {
     /// Lo borrado fuera del árbol (Duplicados, Instaladores): si el archivo es un nodo se quita;
     /// si no, se resta `size` y 1 al `Rest` de su carpeta.
     pub fn forget(&mut self, path: &Path, size: u64) {
-        if let Some(id) = self.find(path) {
+        if let Some(id) = self.lookup(path, true) {
             return self.remove(id);
         }
         let Some(dir) = path.parent().and_then(|d| self.find(d)) else { return };
         let n = self.node(dir);
-        let Some(r) = (n.first..n.first + n.len).find(|&c| self.node(c).kind == Kind::Rest && !self.node(c).gone) else { return };
+        let Some(r) = (n.first..n.first + n.len).find(|&c| self.node(c).kind == Kind::Rest && !self.node(c).gone && self.node(c).len > 0) else { return };
         let len = self.node(r).len.saturating_sub(1);
         self.nodes[r as usize].len = len;
         self.nodes[r as usize].name = rest_name(len);
@@ -240,22 +259,27 @@ impl Tree {
 
 /// Subcarpetas, enlaces, los `FILES_PER_DIR` archivos más grandes y el `Rest`.
 /// `Err(true)` si no se puede leer por permisos.
-fn read_kids(dir: &Path, files: &mut u64, bytes: &mut u64, progress: &mut dyn FnMut(u64, u64, &Path)) -> Result<Vec<Kid>, bool> {
+fn read_kids(dir: &Path, files: &mut u64, bytes: &mut u64, progress: &mut dyn FnMut(u64, u64, &Path)) -> Result<Read, bool> {
     let rd = std::fs::read_dir(dir).map_err(|e| e.kind() == std::io::ErrorKind::PermissionDenied)?;
     let mut kids: Vec<Kid> = Vec::new();
-    let mut heap: BinaryHeap<Reverse<(u64, Box<str>, u32)>> = BinaryHeap::new();
+    let mut odd = Vec::new(); // posiciones de `kids` con nombre no Unicode
+    let mut heap: BinaryHeap<Reverse<Small>> = BinaryHeap::new();
     let (mut rest_n, mut rest_size) = (0u32, 0u64);
     for entry in rd.flatten() {
         let Ok(md) = std::fs::symlink_metadata(entry.path()) else { continue };
-        let name: Box<str> = entry.file_name().to_string_lossy().into();
-        if is_link(&md) {
-            kids.push((name, Kind::Link, 0, mtime(&md)));
-        } else if md.is_dir() {
-            kids.push((name, Kind::Dir, 0, mtime(&md)));
+        let fname = entry.file_name();
+        let is_odd = fname.to_str().is_none();
+        let name: Box<str> = fname.to_string_lossy().into();
+        if is_link(&md) || md.is_dir() {
+            let kind = if is_link(&md) { Kind::Link } else if is_odd { Kind::Denied } else { Kind::Dir };
+            if is_odd {
+                odd.push(kids.len());
+            }
+            kids.push((name, kind, 0, mtime(&md)));
         } else if md.is_file() {
-            heap.push(Reverse((md.len(), name, mtime(&md))));
+            heap.push(Reverse((md.len(), name, mtime(&md), is_odd)));
             if heap.len() > FILES_PER_DIR
-                && let Some(Reverse((s, _, _))) = heap.pop()
+                && let Some(Reverse((s, ..))) = heap.pop()
             {
                 rest_n += 1;
                 rest_size += s;
@@ -267,11 +291,16 @@ fn read_kids(dir: &Path, files: &mut u64, bytes: &mut u64, progress: &mut dyn Fn
             }
         }
     }
-    kids.extend(heap.into_sorted_vec().into_iter().map(|Reverse((s, n, m))| (n, Kind::File, s, m)));
+    for Reverse((s, n, m, o)) in heap.into_sorted_vec() {
+        if o {
+            odd.push(kids.len());
+        }
+        kids.push((n, Kind::File, s, m));
+    }
     if rest_n > 0 {
         kids.push((rest_name(rest_n), Kind::Rest, rest_size, rest_n));
     }
-    Ok(kids)
+    Ok((kids, odd))
 }
 
 #[cfg(test)]
@@ -444,6 +473,71 @@ mod tests {
         t.forget(&root.join("f55.bin"), 55);
         assert_eq!(t.node(t.root()).size, total - 56);
         assert_eq!(t.children(t.root()).len(), 50);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn forget_gone_file_is_noop() {
+        let root = temp_dir("tr-forget-gone");
+        write(&root.join("a.bin"), 10);
+        write(&root.join("b.bin"), 20);
+        let mut t = scan(&root);
+        let id = t.find(&root.join("a.bin")).unwrap();
+        t.remove(id);
+        let before: Vec<u64> = (0..3).map(|i| t.node(i).size).collect();
+        t.forget(&root.join("a.bin"), 10);
+        t.forget(&root.join("nunca.bin"), 5);
+        assert_eq!((0..3).map(|i| t.node(i).size).collect::<Vec<_>>(), before);
+        assert_eq!(t.node(t.root()).size, 20);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn odd_names_marked() {
+        use std::os::unix::ffi::OsStrExt;
+        let root = temp_dir("tr-odd");
+        let bad = std::ffi::OsStr::from_bytes(b"bad\xff");
+        fs::write(root.join(bad), b"abc").unwrap();
+        fs::create_dir_all(root.join(std::ffi::OsStr::from_bytes(b"dir\xfe"))).unwrap();
+        write(&root.join("ok.bin"), 1);
+        let t = scan(&root);
+        let kids = t.children(t.root());
+        assert_eq!(kids.len(), 3);
+        for k in kids {
+            let n = t.node(k);
+            match &*n.name {
+                "ok.bin" => assert!(!n.odd),
+                x if x.starts_with("bad") => assert!(n.odd && n.kind == Kind::File),
+                _ => assert!(n.odd && n.kind == Kind::Denied && n.len == 0),
+            }
+        }
+        assert_eq!(t.node(t.root()).size, 4);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn graft_nested_dirs() {
+        let root = temp_dir("tr-graft-nested");
+        write(&root.join("z.bin"), 1);
+        write(&root.join("a/old.bin"), 5);
+        let mut t = scan(&root);
+        let a = t.find(&root.join("a")).unwrap();
+        fs::remove_file(root.join("a/old.bin")).unwrap();
+        write(&root.join("a/x.bin"), 100);
+        write(&root.join("a/b/y.bin"), 40);
+        write(&root.join("a/b/c/z.bin"), 7);
+        t.graft(a, scan(&root.join("a")));
+        let (b, c) = (t.find(&root.join("a/b")).unwrap(), t.find(&root.join("a/b/c")).unwrap());
+        assert_eq!(names(&t, a), ["x.bin", "b"]);
+        assert_eq!(names(&t, b), ["y.bin", "c"]);
+        assert_eq!(names(&t, c), ["z.bin"]);
+        assert_eq!((t.node(a).size, t.node(b).size, t.node(c).size), (147, 47, 7));
+        assert_eq!(t.node(t.root()).size, 148);
+        let z = t.children(c)[0];
+        assert_eq!(t.path(z), root.join("a/b/c/z.bin"));
+        assert_eq!(t.crumbs(z), [0, a, b, c, z]);
+        assert_eq!(t.node(c).parent, b);
         let _ = fs::remove_dir_all(&root);
     }
 
