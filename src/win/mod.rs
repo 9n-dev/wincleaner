@@ -292,8 +292,10 @@ pub fn security_places() -> Places {
     }
 }
 
-/// Abre `url` con el programa predeterminado. Solo `https://` y `windowsdefender:`
-/// (`checks::openable_url`): nada de `file:`, `http:`, `javascript:` ni rutas.
+/// Abre `url` con el programa predeterminado. Solo `https://`, `windowsdefender:` y las tres de
+/// los lanzadores (`steam://uninstall/<id>`, `com.epicgames.launcher://` y
+/// `ms-settings:appsfeatures`), según `checks::openable_url`: nada de `file:`, `http:`,
+/// `javascript:` ni rutas.
 pub fn open_url(url: &str) {
     if !checks::openable_url(url) {
         return;

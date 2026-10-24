@@ -124,7 +124,10 @@ pub fn find(
     // ponytail: se guardan todas las rutas de `min_size` o más (unos 100 MB con un millón de
     // archivos). Si pesa, contar primero por tamaño y guardar después solo las rutas candidatas.
     let mut by_size: HashMap<u64, Vec<DupFile>> = HashMap::new();
-    let mut stack: Vec<PathBuf> = roots.to_vec();
+    // Una raíz que es un enlace (`Documentos` como junction a `D:\Docs`) tampoco se sigue: si
+    // no, cada archivo saldría como duplicado de sí mismo.
+    let mut stack: Vec<PathBuf> =
+        roots.iter().filter(|r| std::fs::symlink_metadata(r).is_ok_and(|md| !is_link(&md))).cloned().collect();
     let mut seen = 0u64;
     while let Some(dir) = stack.pop() {
         if cancel.load(Ordering::Relaxed) {
@@ -206,11 +209,13 @@ pub fn find(
     Some(groups)
 }
 
-/// Quita las raíces repetidas o que están dentro de otra.
-pub fn dedupe_roots(v: Vec<PathBuf>) -> Vec<PathBuf> {
+/// Quita las raíces repetidas o que están dentro de otra, pero solo si al recorrer la de fuera
+/// se llega a ella: si `skip` frena alguna carpeta del camino (p. ej. `C:\Users`), se queda.
+pub fn dedupe_roots(v: Vec<PathBuf>, skip: &dyn Fn(&Path) -> bool) -> Vec<PathBuf> {
+    let reached = |p: &Path, q: &Path| p.ancestors().take_while(|a| *a != q).all(|a| !skip(a));
     let mut out: Vec<PathBuf> = Vec::new();
     for (i, p) in v.iter().enumerate() {
-        let dup = v.iter().enumerate().any(|(j, q)| j != i && p.starts_with(q) && (p != q || j < i));
+        let dup = v.iter().enumerate().any(|(j, q)| j != i && p.starts_with(q) && (p != q || j < i) && reached(p, q));
         if !dup {
             out.push(p.clone());
         }
@@ -248,10 +253,13 @@ pub fn can_mark(marked: &[bool], i: usize) -> bool {
     marked.iter().enumerate().any(|(j, &m)| j != i && !m)
 }
 
-/// Justo antes de enviar: las dos copias existen, pesan `size` y siguen siendo iguales.
+/// Justo antes de enviar: las dos copias existen, pesan `size`, siguen siendo iguales y no son
+/// el mismo archivo visto por dos caminos (un junction por medio).
 pub fn still_duplicate(kept: &Path, marked: &Path, size: u64) -> bool {
     let len_ok = |p: &Path| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_file() && m.len() == size);
-    len_ok(kept) && len_ok(marked) && same_content(kept, marked).unwrap_or(false)
+    // En Windows, `canonicalize` es la ruta final del handle (como `clean::final_path_of`).
+    let two = matches!((std::fs::canonicalize(kept), std::fs::canonicalize(marked)), (Ok(a), Ok(b)) if a != b);
+    len_ok(kept) && len_ok(marked) && two && same_content(kept, marked).unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -403,6 +411,30 @@ mod tests {
     #[test]
     fn dedupe_roots_drops_nested() {
         let v = vec![PathBuf::from("/a/b"), PathBuf::from("/a"), PathBuf::from("/c"), PathBuf::from("/c")];
-        assert_eq!(dedupe_roots(v), [PathBuf::from("/a"), PathBuf::from("/c")]);
+        assert_eq!(dedupe_roots(v, &|_| false), [PathBuf::from("/a"), PathBuf::from("/c")]);
+    }
+
+    #[test]
+    fn dedupe_roots_keeps_nested_behind_skipped() {
+        // «Tus carpetas» y «Resto de C:»: recorrer C: no baja a `Users`, así que Documentos se queda.
+        let docs = PathBuf::from("/c/Users/ana/Documents");
+        let v = vec![docs.clone(), PathBuf::from("/c/Users/ana/Docs2/x"), PathBuf::from("/c")];
+        let skip = |p: &Path| p.ends_with("Users") || p.ends_with("x");
+        assert_eq!(dedupe_roots(v, &skip), [docs, PathBuf::from("/c/Users/ana/Docs2/x"), PathBuf::from("/c")]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linked_root_is_not_a_duplicate_of_itself() {
+        let d = temp_dir("dups-linkroot");
+        let real = d.join("real");
+        std::fs::create_dir(&real).unwrap();
+        let x = put(&real, "x.pdf", &[4u8; 2_000]);
+        let link = d.join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert!(run(&[real.clone(), link.clone()], 1).is_empty());
+        assert!(run(std::slice::from_ref(&link), 1).is_empty());
+        // Aunque llegase un grupo así, la copia «marcada» es la misma que la que se conserva.
+        assert!(!still_duplicate(&x, &link.join("x.pdf"), 2_000));
     }
 }

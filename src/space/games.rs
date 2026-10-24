@@ -45,6 +45,12 @@ pub struct Game {
     pub uninstall: Uninstall,
 }
 
+/// Carpeta de juego que se puede usar: no vacía y no la raíz de una unidad (protegería y
+/// mediría la unidad entera).
+fn game_dir(d: Option<String>) -> Option<String> {
+    d.filter(|d| d.split(['\\', '/']).filter(|c| !c.trim().is_empty()).count() >= 2)
+}
+
 fn num(v: Option<&Vdf>) -> Option<u64> {
     v?.str()?.trim().parse().ok()
 }
@@ -114,7 +120,7 @@ pub fn epic_game(item_text: &str) -> Option<Game> {
     Some(Game {
         name: s("DisplayName")?,
         launcher: Launcher::Epic,
-        dir: s("InstallLocation"),
+        dir: game_dir(s("InstallLocation")),
         size,
         last_played: None,
         uninstall: Uninstall::Url("com.epicgames.launcher://".into()),
@@ -146,7 +152,7 @@ pub fn uninstall_game(e: &RawEntry) -> Option<Game> {
     Some(Game {
         name: name.to_string(),
         launcher,
-        dir: e.install_location.clone().filter(|d| !d.trim().is_empty()),
+        dir: game_dir(e.install_location.clone()),
         size: e.estimated_size_kb.map(|k| u64::from(k) * 1024),
         last_played: None,
         uninstall: Uninstall::Program { hive: e.hive, key: e.key.clone() },
@@ -253,6 +259,20 @@ mod tests {
         assert_eq!(g.dir.as_deref(), Some(r"C:\Program Files\Epic Games\Fortnite"));
         assert_eq!(g.size, Some(36507222016));
         assert_eq!(g.uninstall, Uninstall::Url("com.epicgames.launcher://".into()));
+    }
+
+    #[test]
+    fn drive_root_is_not_a_game_dir() {
+        for root in [r"D:\\", "D:", "D:/"] {
+            let t = ITEM.replace(r#""InstallLocation": "C:\\Program Files\\Epic Games\\Fortnite""#, &format!(r#""InstallLocation": "{root}""#));
+            assert_ne!(t, ITEM);
+            let g = epic_game(&t).unwrap();
+            assert_eq!(g.dir, None, "{root}");
+        }
+        let e = RawEntry { install_location: Some(r"E:\".into()), ..entry("GOG.com", "Hollow Knight", "u.exe") };
+        let g = uninstall_game(&e).unwrap();
+        assert_eq!(g.dir, None);
+        assert_eq!(g.name, "Hollow Knight");
     }
 
     #[test]

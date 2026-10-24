@@ -30,6 +30,8 @@ pub enum Reason {
     Protected,
     /// Duplicados: la copia ya no es igual a la que se conserva (o una de las dos ha desaparecido).
     Changed,
+    /// Windows lo ha borrado sin pasar por la papelera (no se puede deshacer): ya no existe.
+    Purged,
     Other(i32),
 }
 
@@ -47,12 +49,18 @@ pub struct Outcome {
     pub sent: u64,
     pub left: u64,
     pub failed: Vec<Reason>,
+    /// Nada se envió: todo había desaparecido antes (otro programa lo borró).
+    pub missing: bool,
 }
 
 /// `(ok, título, texto)` del aviso que sale al terminar de enviar a la papelera o de borrar
-/// del todo (`purge`). Si ha fallado algo, el texto explica el motivo más importante.
-pub fn outcome_text(o: &Outcome, purge: bool) -> (bool, String, String) {
+/// del todo (`purge`). Si ha fallado algo, el texto explica el motivo más importante. `alt`:
+/// quien lo pidió ofrece «Borrar del todo…» (solo Carpetas).
+pub fn outcome_text(o: &Outcome, purge: bool, alt: bool) -> (bool, String, String) {
     let what = what(&o.names);
+    if o.missing {
+        return (true, format!("Ya no existía{}: {what}.", if o.names.len() == 1 { "" } else { "n" }), String::new());
+    }
     if o.failed.is_empty() {
         return match (purge, o.names.len() == 1) {
             (false, one) => (
@@ -70,7 +78,7 @@ pub fn outcome_text(o: &Outcome, purge: bool) -> (bool, String, String) {
         (_, false) => format!("No se ha podido borrar: {what}."),
     };
     // El motivo que más importa decide la explicación; el resto se resume en «y N más».
-    let main = [Reason::NoBin, Reason::InUse, Reason::Denied, Reason::Protected, Reason::Changed]
+    let main = [Reason::Purged, Reason::NoBin, Reason::InUse, Reason::Denied, Reason::Protected, Reason::Changed]
         .into_iter()
         .find(|r| o.failed.contains(r))
         .unwrap_or(o.failed[0]);
@@ -81,10 +89,24 @@ pub fn outcome_text(o: &Outcome, purge: bool) -> (bool, String, String) {
     let files = noun("archivo");
     // Protegido u otro motivo se cuentan por elemento elegido (carpeta o archivo), no por archivo.
     let items = noun("elemento");
+    let rest = o.failed.len() - n;
+    let more = if rest == 1 { "1 más no se ha podido borrar".to_string() } else { format!("{rest} más no se han podido borrar") };
+    if main == Reason::Purged {
+        let title = match o.names.as_slice() {
+            [one] => format!("Se ha borrado del todo «{one}»."),
+            _ => format!("Se {} borrado del todo {n} de {what}.", pl("ha", "han")),
+        };
+        let more = if rest > 0 { format!(" Además, {more}.") } else { String::new() };
+        return (false, title, format!("Windows {} ha borrado sin pasar por la papelera: no se puede deshacer.{more}", pl("lo", "los")));
+    }
     let (cause, advice) = match main {
         Reason::NoBin => (
             format!("{} no {} en la papelera o su unidad no tiene", noun("elemento"), pl("cabe", "caben")),
-            "Si quieres liberar el espacio igualmente, usa «Borrar del todo…».".to_string(),
+            if alt {
+                "Si quieres liberar el espacio igualmente, usa «Borrar del todo…».".to_string()
+            } else {
+                format!("Si quieres liberar el espacio igualmente, {} en Carpetas y usa «Borrar del todo…».", pl("búscalo", "búscalos"))
+            },
         ),
         Reason::InUse => (
             format!("{files} {} en uso por otro programa", pl("está", "están")),
@@ -102,10 +124,9 @@ pub fn outcome_text(o: &Outcome, purge: bool) -> (bool, String, String) {
             format!("{items} {} cambiado desde la búsqueda", pl("ha", "han")),
             "Vuelve a buscar duplicados.".to_string(),
         ),
-        Reason::Other(_) => (format!("{items} no se {} podido borrar", pl("ha", "han")), "Vuelve a intentarlo.".to_string()),
+        Reason::Other(_) | Reason::Purged => (format!("{items} no se {} podido borrar", pl("ha", "han")), "Vuelve a intentarlo.".to_string()),
     };
-    let rest = o.failed.len() - n;
-    let rest = if rest > 0 { format!(" y {rest} más no se han podido borrar") } else { String::new() };
+    let rest = if rest > 0 { format!(" y {more}") } else { String::new() };
     let mut parts = Vec::new();
     if o.sent > 0 {
         parts.push(if purge {
@@ -163,7 +184,7 @@ mod tests {
     const GB: u64 = 1 << 30;
 
     fn outcome(names: &[&str], sent: u64, left: u64, failed: Vec<Reason>) -> Outcome {
-        Outcome { names: names.iter().map(|s| s.to_string()).collect(), sent, left, failed }
+        Outcome { names: names.iter().map(|s| s.to_string()).collect(), sent, left, failed, missing: false }
     }
 
     #[test]
@@ -195,7 +216,7 @@ mod tests {
     fn outcome_ok_one() {
         let o = outcome(&["boda_prima_4K.mov"], 13_743_895_347, 0, vec![]);
         assert_eq!(
-            outcome_text(&o, false),
+            outcome_text(&o, false, true),
             (
                 true,
                 "Enviado a la papelera: boda_prima_4K.mov (12,8 GB).".into(),
@@ -207,7 +228,7 @@ mod tests {
     #[test]
     fn outcome_ok_many() {
         let o = outcome(&["a", "b", "c", "d", "e"], 6 * GB, 0, vec![]);
-        let (ok, title, _) = outcome_text(&o, false);
+        let (ok, title, _) = outcome_text(&o, false, true);
         assert!(ok);
         assert_eq!(title, "Enviados a la papelera: 5 elementos (6 GB).");
     }
@@ -216,7 +237,7 @@ mod tests {
     fn outcome_partial_in_use() {
         let o = outcome(&["OBS"], 38 * GB, 3_435_973_837, vec![Reason::InUse; 3]);
         assert_eq!(
-            outcome_text(&o, false),
+            outcome_text(&o, false, true),
             (
                 false,
                 "No se ha podido borrar todo «OBS».".into(),
@@ -230,7 +251,7 @@ mod tests {
     #[test]
     fn outcome_no_bin() {
         let o = outcome(&["juego.iso"], 0, 40 * GB, vec![Reason::NoBin]);
-        let (ok, _, text) = outcome_text(&o, false);
+        let (ok, _, text) = outcome_text(&o, false, true);
         assert!(!ok);
         assert!(text.contains("no cabe en la papelera"), "{text}");
         assert!(text.contains("Borrar del todo…"), "{text}");
@@ -265,26 +286,66 @@ mod tests {
     #[test]
     fn outcome_purge_failed_counts_items() {
         let o = outcome(&["OBS"], 38 * GB, 3 * GB, vec![Reason::Other(0)]);
-        let (ok, _, text) = outcome_text(&o, true);
+        let (ok, _, text) = outcome_text(&o, true, true);
         assert!(!ok);
         assert!(text.starts_with("1 elemento no se ha podido borrar (se han liberado 38 GB; quedan 3 GB)."), "{text}");
         let o = outcome(&["a", "b"], 0, 2 * GB, vec![Reason::Protected; 2]);
-        assert!(outcome_text(&o, false).2.starts_with("2 elementos están en una carpeta protegida"));
+        assert!(outcome_text(&o, false, true).2.starts_with("2 elementos están en una carpeta protegida"));
     }
 
     #[test]
     fn outcome_changed() {
         let o = outcome(&["a.mp4", "b.mp4"], GB, GB, vec![Reason::Changed]);
-        let (ok, _, text) = outcome_text(&o, false);
+        let (ok, _, text) = outcome_text(&o, false, true);
         assert!(!ok);
         assert!(text.starts_with("1 elemento ha cambiado desde la búsqueda (1 GB se han enviado"), "{text}");
         assert!(text.ends_with("Vuelve a buscar duplicados."), "{text}");
     }
 
     #[test]
+    fn outcome_no_bin_without_purge_option() {
+        // Duplicados e Instaladores no tienen «Borrar del todo…»: se manda a Carpetas.
+        let o = outcome(&["juego.iso"], 0, 40 * GB, vec![Reason::NoBin]);
+        let (ok, _, text) = outcome_text(&o, false, false);
+        assert!(!ok);
+        assert!(text.contains("no cabe en la papelera"), "{text}");
+        assert!(text.contains("Carpetas"), "{text}");
+    }
+
+    #[test]
+    fn outcome_purged_by_shell() {
+        let o = outcome(&["boda.mov"], GB, 0, vec![Reason::Purged]);
+        let (ok, title, text) = outcome_text(&o, false, true);
+        assert!(!ok);
+        assert_eq!(title, "Se ha borrado del todo «boda.mov».");
+        assert!(text.contains("sin pasar por la papelera") && text.contains("no se puede deshacer"), "{text}");
+        let o = outcome(&["a", "b", "c"], GB, GB, vec![Reason::InUse, Reason::Purged]);
+        let (ok, title, text) = outcome_text(&o, false, true);
+        assert!(!ok);
+        assert_eq!(title, "Se ha borrado del todo 1 de 3 elementos.");
+        assert!(text.ends_with("no se puede deshacer. Además, 1 más no se ha podido borrar."), "{text}");
+    }
+
+    #[test]
+    fn outcome_rest_agrees() {
+        let o = outcome(&["a", "b", "c"], 0, GB, vec![Reason::NoBin, Reason::InUse]);
+        assert!(outcome_text(&o, false, true).2.contains(" y 1 más no se ha podido borrar"));
+        let o = outcome(&["a", "b", "c"], 0, GB, vec![Reason::NoBin, Reason::InUse, Reason::Denied]);
+        assert!(outcome_text(&o, false, true).2.contains(" y 2 más no se han podido borrar"));
+    }
+
+    #[test]
+    fn outcome_all_missing() {
+        let o = Outcome { missing: true, ..outcome(&["x.iso"], 0, 0, vec![]) };
+        assert_eq!(outcome_text(&o, false, true), (true, "Ya no existía: x.iso.".into(), String::new()));
+        let o = Outcome { missing: true, ..outcome(&["a", "b"], 0, 0, vec![]) };
+        assert_eq!(outcome_text(&o, true, true).1, "Ya no existían: 2 elementos.");
+    }
+
+    #[test]
     fn outcome_purge_ok() {
         let o = outcome(&["boda_prima_4K.mov"], 13_743_895_347, 0, vec![]);
-        let (ok, title, text) = outcome_text(&o, true);
+        let (ok, title, text) = outcome_text(&o, true, true);
         assert!(ok);
         assert!(title.starts_with("Borrado del todo:"), "{title}");
         assert!(text.contains("12,8 GB"), "{text}");

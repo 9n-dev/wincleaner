@@ -11,6 +11,8 @@ use std::time::{Duration, Instant};
 
 use slint::{ComponentHandle, Model, ModelRc, Timer, TimerMode, VecModel, Weak};
 use wincleaner::format;
+use wincleaner::space::MAX_ROWS;
+use wincleaner::space::zones::Zones;
 use wincleaner::space::dups::{self, DupFile, FileKind, Keep, Phase, can_mark, dedupe_roots, keeper, kind_label, still_duplicate};
 use wincleaner::ui::{AppWindow, Confirm, DupFileRow, DupGroupRow, DupPlace, DupStep, DupsData, ModalLine, confirm};
 
@@ -50,7 +52,8 @@ struct State {
     roots: Vec<Vec<PathBuf>>,
     /// `None` hasta que termina una búsqueda.
     groups: Option<Vec<Group>>,
-    /// Índice en `groups` de cada fila de `DupsData.groups` (los del tipo elegido).
+    /// Índice en `groups` de cada fila de `DupsData.groups`: los del tipo elegido, como mucho
+    /// `MAX_ROWS` (los que más sobran). Solo se envía lo que se ve.
     shown: Vec<usize>,
     /// Hay una búsqueda en marcha: `true` en su `cancel` la detiene.
     cancel: Option<Arc<AtomicBool>>,
@@ -175,27 +178,40 @@ fn send_text(st: &State) -> (String, bool) {
     }
 }
 
-/// Los grupos del tipo elegido, el subtítulo y el botón.
 /// Lo que sobra en todos los grupos, para el Resumen; `None` hasta la primera búsqueda.
 pub(super) fn waste() -> Option<u64> {
     STATE.with_borrow(|st| st.groups.as_ref().map(|g| g.iter().map(Group::waste).sum()))
 }
 
+/// Sin zonas no se sabe qué es del sistema: no se baja de las raíces.
+fn skip(zones: Option<&Zones>, p: &Path) -> bool {
+    zones.is_none_or(|z| p.to_str().is_none_or(|s| z.skip_walk(s)))
+}
+
+/// Los grupos del tipo elegido (los `MAX_ROWS` que más sobran), el subtítulo, cuántos no caben
+/// y el botón.
 fn render(app: &AppWindow) {
     let data = app.global::<DupsData>();
     let kind = data.get_kind();
-    let (rows, sub, (send, can)) = STATE.with_borrow_mut(|st| {
+    let (rows, sub, more, (send, can)) = STATE.with_borrow_mut(|st| {
         let groups = st.groups.as_deref().unwrap_or_default();
-        st.shown = (0..groups.len()).filter(|&i| kind == 0 || kind_index(groups[i].kind) == kind).collect();
-        let rows: Vec<DupGroupRow> = st.shown.iter().map(|&i| row(&groups[i])).collect();
-        let waste: u64 = st.shown.iter().map(|&i| groups[i].waste()).sum();
-        let sub = match rows.len() as u64 {
+        // Ya vienen ordenados por lo que sobra.
+        let all: Vec<usize> = (0..groups.len()).filter(|&i| kind == 0 || kind_index(groups[i].kind) == kind).collect();
+        let waste: u64 = all.iter().map(|&i| groups[i].waste()).sum();
+        let sub = match all.len() as u64 {
             0 => format!("Búsqueda terminada en {}", format::duration(st.took)),
             n => format!("{} · sobran {}", plural(n, "grupo", "grupos"), format::bytes(waste)),
         };
-        (rows, sub, send_text(st))
+        let more = match all.len().saturating_sub(MAX_ROWS) as u64 {
+            0 => String::new(),
+            m => format!("y {} más", plural(m, "grupo", "grupos")),
+        };
+        st.shown = all.into_iter().take(MAX_ROWS).collect();
+        let rows: Vec<DupGroupRow> = st.shown.iter().map(|&i| row(&groups[i])).collect();
+        (rows, sub, more, send_text(st))
     });
     data.set_groups(model(rows));
+    data.set_more(more.into());
     data.set_subtitle(sub.into());
     data.set_send_text(send.into());
     data.set_can_send(can);
@@ -305,15 +321,15 @@ impl Dups {
         }
         let data = app.global::<DupsData>();
         let places = data.get_places();
+        let zones = self.space.zones();
         let roots = STATE.with_borrow(|st| {
             let picked = st.roots.iter().enumerate().filter(|(i, _)| places.row_data(*i).is_some_and(|p| p.checked));
-            dedupe_roots(picked.flat_map(|(_, r)| r.clone()).collect())
+            dedupe_roots(picked.flat_map(|(_, r)| r.clone()).collect(), &|p| skip(zones.as_ref(), p))
         });
         if roots.is_empty() {
             return;
         }
         let min = MINS[usize::try_from(data.get_min()).unwrap_or(0).min(2)];
-        let zones = self.space.zones();
         let known = win::known_dirs();
         let dirs = |labels: &[&str]| -> Vec<String> {
             known.iter().filter(|k| labels.contains(&k.1)).map(|k| k.0.to_string_lossy().into_owned()).collect()
@@ -344,9 +360,8 @@ impl Dups {
         let weak = self.app.clone();
         let start = Instant::now();
         std::thread::spawn(move || {
-            // Sin zonas no se sabe qué es del sistema: no se baja de las raíces y nada se marca.
-            let skip = |p: &Path| zones.as_ref().is_none_or(|z| p.to_str().is_none_or(|s| z.skip_walk(s)));
-            let found = dups::find(&roots, min, &skip, &cancel, &mut |phase| {
+            // Sin zonas tampoco se marca nada.
+            let found = dups::find(&roots, min, &|p| skip(zones.as_ref(), p), &cancel, &mut |phase| {
                 if let Ok(mut g) = shared.lock() {
                     match phase {
                         Phase::Listing(n) => g.0 = n,

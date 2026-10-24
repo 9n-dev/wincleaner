@@ -9,6 +9,10 @@ pub mod installers;
 use tree::{Kind, Node};
 use zones::Block;
 
+/// Filas que se pintan como mucho en una lista de Carpetas o de Duplicados: con miles, la
+/// ventana se congela y la memoria se dispara.
+pub const MAX_ROWS: usize = 200;
+
 /// La fila se puede borrar desde Carpetas: se conocen las zonas, no cae en ninguna, la ruta es
 /// exacta y es una carpeta o un archivo de verdad (no un enlace, un `Rest` ni algo sin acceso).
 pub fn deletable(node: &Node, block: Option<Block>, zones_known: bool) -> bool {

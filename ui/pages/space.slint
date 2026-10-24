@@ -43,6 +43,8 @@ export struct SpaceRow {
     badge: string,
     can-enter: bool,
     can-delete: bool,
+    // Carpeta o archivo de verdad: «Abrir en el Explorador» aunque solo se pueda ver.
+    can-open: bool,
     selectable: bool,
 }
 
@@ -282,10 +284,10 @@ component SpaceItem {
             horizontal-alignment: right;
             vertical-alignment: center;
         }
-        if root.selected && root.item.can-delete: HorizontalLayout {
+        if root.selected: HorizontalLayout {
             spacing: 6px;
             alignment: center;
-            VerticalLayout {
+            if root.item.can-open: VerticalLayout {
                 alignment: center;
                 Button {
                     icon: "folder";
@@ -293,7 +295,7 @@ component SpaceItem {
                     clicked => { root.open(); }
                 }
             }
-            VerticalLayout {
+            if root.item.can-delete: VerticalLayout {
                 alignment: center;
                 Button {
                     text: root.compact ? "" : "Papelera";
@@ -302,12 +304,12 @@ component SpaceItem {
                     clicked => { root.recycle(); }
                 }
             }
-        }
-        if root.selected && !root.item.can-delete: Text {
-            text: "Solo se puede ver";
-            color: Palette.fa;
-            font-size: Type.label;
-            vertical-alignment: center;
+            if !root.item.can-delete: Text {
+                text: "Solo se puede ver";
+                color: Palette.fa;
+                font-size: Type.label;
+                vertical-alignment: center;
+            }
         }
     }
 }
@@ -429,6 +431,8 @@ export component SpacePage inherits Rectangle {
             }
             if SpaceData.can-retry: Button {
                 text: "Reintentar";
+                // Intro nunca borra.
+                enter-activates: false;
                 clicked => { SpaceData.retry(); }
             }
             Button {

@@ -105,8 +105,16 @@ impl Games {
             return;
         }
         let k = self.clone();
+        let zones = self.space.zones();
         std::thread::spawn(move || {
-            let games = win::games::list();
+            let mut games = win::games::list();
+            // Un juego «instalado» en el perfil, una carpeta conocida o algo que las contiene se
+            // queda en la lista, pero sin carpeta: ni la protege entera ni se mide.
+            for g in &mut games {
+                if g.dir.as_deref().is_some_and(|d| zones.as_ref().is_some_and(|z| z.holds_user(d))) {
+                    g.dir = None;
+                }
+            }
             let todo: Vec<(usize, String)> =
                 games.iter().enumerate().filter(|(_, g)| g.size.is_none()).filter_map(|(i, g)| Some((i, g.dir.clone()?))).collect();
             let k2 = k.clone();

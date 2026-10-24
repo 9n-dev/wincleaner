@@ -170,6 +170,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 badge: badge.into(),
                 can_enter: icon == "folder",
                 can_delete: del,
+                can_open: !name.ends_with("más pequeños"),
                 selectable: !name.ends_with("más pequeños"),
             })
             .collect();

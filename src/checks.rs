@@ -344,7 +344,7 @@ fn launcher_url(url: &str) -> bool {
             .is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
 }
 
-/// Las únicas URL que WinCleaner abre: `https://…` y `windowsdefender:…`, sin comillas, espacios
+/// Las únicas URL que WinCleaner abre: `https://…`, `windowsdefender:…` y las de los lanzadores, sin comillas, espacios
 /// ni caracteres de control (nada que ShellExecute pueda leer como otro argumento).
 pub fn openable_url(url: &str) -> bool {
     (url.starts_with("https://") || url.starts_with("windowsdefender:") || launcher_url(url))

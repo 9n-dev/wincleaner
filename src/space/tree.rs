@@ -155,6 +155,15 @@ impl Tree {
         v
     }
 
+    /// `children` partido en (las `max` más grandes con el `Rest` detrás, las que no caben):
+    /// una carpeta con 20 000 subcarpetas no puede ser 20 000 filas.
+    pub fn split_children(&self, id: Id, max: usize) -> (Vec<Id>, Vec<Id>) {
+        let (mut shown, rest): (Vec<Id>, Vec<Id>) = self.children(id).into_iter().partition(|&c| self.node(c).kind != Kind::Rest);
+        let hidden = shown.split_off(max.min(shown.len()));
+        shown.extend(rest);
+        (shown, hidden)
+    }
+
     /// De la raíz a `id`, ambos incluidos.
     pub fn crumbs(&self, id: Id) -> Vec<Id> {
         let mut v = vec![id];
@@ -359,6 +368,20 @@ mod tests {
         assert_eq!((rest.kind, rest.len, rest.size), (Kind::Rest, 5, 15));
         assert_eq!(t.files(), 55);
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn split_children_caps_and_keeps_rest() {
+        let mut t = Tree::new("C:\\");
+        let kids = (1..=5u64).map(|i| (format!("d{i}").into(), Kind::Dir, i * 10, 0)).chain([("r".into(), Kind::Rest, 1, 7)]).collect();
+        t.add_children(t.root(), kids);
+        t.finish();
+        let (shown, hidden) = t.split_children(t.root(), 3);
+        let n = |v: &[Id]| v.iter().map(|&c| t.node(c).name.to_string()).collect::<Vec<_>>();
+        assert_eq!(n(&shown), ["d5", "d4", "d3", "r"]);
+        assert_eq!(n(&hidden), ["d2", "d1"]);
+        let (shown, hidden) = t.split_children(t.root(), 200);
+        assert_eq!((shown.len(), hidden.len()), (6, 0));
     }
 
     #[cfg(unix)]

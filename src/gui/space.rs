@@ -11,10 +11,10 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use slint::{ComponentHandle, ModelRc, Timer, TimerMode, VecModel, Weak};
 use wincleaner::categories::is_link;
-use wincleaner::space::deletable;
+use wincleaner::space::{MAX_ROWS, deletable};
 use wincleaner::space::dups::{kind, kind_label};
 use wincleaner::space::recycle::{Outcome, Reason, outcome_text, outermost, undo_text};
-use wincleaner::space::tree::{Id, Kind, Tree};
+use wincleaner::space::tree::{Id, Kind, Node, Tree};
 use wincleaner::space::zones::{Block, Zones};
 use wincleaner::ui::{self, AppWindow, Confirm, DriveItem, ModalLine, SpaceData, SpaceRow, StripPart, confirm_with_alt};
 use wincleaner::{clean, format};
@@ -97,6 +97,12 @@ fn name(tree: &Tree, id: Id, zones: Option<&Zones>) -> String {
     label.map_or_else(|| if id == tree.root() { n.trim_end_matches('\\') } else { n }.to_string(), Into::into)
 }
 
+/// Se puede abrir en el Explorador: una carpeta o un archivo de verdad con la ruta exacta
+/// (aunque sea solo para ver; abrir nunca borra).
+fn openable(n: &Node) -> bool {
+    matches!(n.kind, Kind::Dir | Kind::File) && !n.odd
+}
+
 /// Fila `i` (por tamaño) de una carpeta que ocupa `total`.
 fn row(tree: &Tree, id: Id, i: usize, total: u64, zones: Option<&Zones>) -> SpaceRow {
     let n = tree.node(id);
@@ -143,7 +149,29 @@ fn row(tree: &Tree, id: Id, i: usize, total: u64, zones: Option<&Zones>) -> Spac
         // Un nombre no Unicode no da una ruta exacta: solo se ve.
         can_enter: n.can_enter(),
         can_delete: deletable(n, block, zones.is_some()),
+        can_open: openable(n),
         selectable: n.kind != Kind::Rest,
+    }
+}
+
+/// Fila que junta lo que no cabe en la lista (`hidden`): no se elige ni se borra.
+fn more_row(tree: &Tree, hidden: &[Id], total: u64) -> SpaceRow {
+    let size: u64 = hidden.iter().map(|&c| tree.node(c).size).sum();
+    let dirs = hidden.iter().all(|&c| tree.node(c).kind != Kind::File);
+    let name = match (hidden.len(), dirs) {
+        (1, true) => "1 carpeta más".to_string(),
+        (1, false) => "1 elemento más".to_string(),
+        (n, d) => format!("{} {} más", format::count(n as u64), if d { "carpetas" } else { "elementos" }),
+    };
+    SpaceRow {
+        icon: "folder".into(),
+        name: name.into(),
+        sub: "Juntos".into(),
+        size: format::bytes(size).into(),
+        pct: format::percent(size, total).into(),
+        share: if total == 0 { 0.0 } else { (size as f64 / total as f64) as f32 },
+        color: 5,
+        ..Default::default()
     }
 }
 
@@ -195,6 +223,9 @@ fn lock_note(tree: &Tree, id: Id, zones: Option<&Zones>) -> Option<(String, Stri
             format!("{name} no se puede borrar."),
             "Es una carpeta que Windows o WinCleaner necesitan. Lo que hay dentro sí: entra y elige qué borrar.",
         ),
+        Block::System if n.name.to_lowercase().starts_with("boot") => {
+            note(format!("{name} es un archivo del sistema."), "Windows lo necesita para arrancar.")
+        }
         Block::System => note(
             format!("{name} es un archivo del sistema."),
             "Windows lo usa y lo vuelve a crear. Para que ocupe menos, cambia la memoria virtual o la hibernación en la configuración de Windows.",
@@ -251,9 +282,15 @@ fn show(app: &AppWindow) {
         let State { trees, root, cur, kids, zones, .. } = st;
         let (tree, _) = trees.get(root)?;
         let zones = zones.as_ref();
-        *kids = tree.children(*cur);
+        // Las `MAX_ROWS` más grandes y una fila con las demás, que va al final: `kids` sigue
+        // valiendo para cada fila elegible.
+        let (shown, hidden) = tree.split_children(*cur, MAX_ROWS);
+        *kids = shown;
         let total = tree.node(*cur).size;
-        let rows: Vec<SpaceRow> = kids.iter().enumerate().map(|(i, &id)| row(tree, id, i, total, zones)).collect();
+        let mut rows: Vec<SpaceRow> = kids.iter().enumerate().map(|(i, &id)| row(tree, id, i, total, zones)).collect();
+        if !hidden.is_empty() {
+            rows.push(more_row(tree, &hidden, total));
+        }
         let mut strip: Vec<StripPart> =
             rows.iter().filter(|r| r.color < 5).map(|r| StripPart { label: r.name.clone(), share: r.share, color: r.color }).collect();
         let rest = 1.0 - strip.iter().map(|p| p.share).sum::<f32>();
@@ -262,7 +299,7 @@ fn show(app: &AppWindow) {
         }
         let mut crumbs = vec!["Este equipo".into()];
         crumbs.extend(tree.crumbs(*cur).into_iter().map(|c| name(tree, c, zones).into()));
-        let denied = kids.iter().any(|&k| tree.node(k).kind == Kind::Denied && !tree.node(k).odd);
+        let denied = kids.iter().chain(&hidden).any(|&k| tree.node(k).kind == Kind::Denied && !tree.node(k).odd);
         Some((rows, strip, crumbs, denied, subtitle(st)))
     });
     let Some((rows, strip, crumbs, denied, sub)) = view else { return units(app) };
@@ -412,7 +449,8 @@ impl Space {
         data.on_open(|i| {
             let path = STATE.with_borrow(|st| {
                 let (tree, _) = st.trees.get(&st.root)?;
-                Some(tree.path(*st.kids.get(usize::try_from(i).ok()?)?))
+                let id = *st.kids.get(usize::try_from(i).ok()?)?;
+                openable(tree.node(id)).then(|| tree.path(id))
             });
             if let Some(p) = path {
                 win::open_in_explorer(&p);
@@ -623,7 +661,7 @@ impl Space {
         };
         // Reintentar la papelera se repite tal cual (se puede recuperar); borrar del todo vuelve a pedir BORRAR.
         let retry: Retry = Rc::new(move |k, app| if purge { k.ask_purge(app, at.clone(), id) } else { k.trash(app, at.clone(), id, false) });
-        self.delete(purge, vec![path], vec![name], size, Some(retry), None, Box::new(after));
+        self.delete(purge, true, vec![path], vec![name], size, Some(retry), None, Box::new(after));
     }
 
     /// Envía `items` a la papelera en un hilo, con la ventana bloqueada, desde cualquier pestaña.
@@ -640,11 +678,12 @@ impl Space {
         still: Option<Still>,
         after: impl FnOnce(&AppWindow, &Report) + 'static,
     ) {
-        self.delete(false, items, names, size, Some(retry), still, Box::new(after));
+        self.delete(false, false, items, names, size, Some(retry), still, Box::new(after));
     }
 
+    /// `alt`: el aviso puede proponer «Borrar del todo…» (solo desde Carpetas).
     #[allow(clippy::too_many_arguments)]
-    fn delete(&self, purge: bool, items: Vec<PathBuf>, names: Vec<String>, size: u64, retry: Option<Retry>, still: Option<Still>, after: After) {
+    fn delete(&self, purge: bool, alt: bool, items: Vec<PathBuf>, names: Vec<String>, size: u64, retry: Option<Retry>, still: Option<Still>, after: After) {
         let Some(app) = self.0.upgrade().filter(|a| !a.get_locked()) else { return };
         let Some(zones) = STATE.with_borrow(|st| st.zones.clone()) else { return };
         // Sin repetidos ni lo que ya va dentro de otro.
@@ -660,11 +699,24 @@ impl Space {
         app.set_locked(true);
         let k = self.clone();
         std::thread::spawn(move || {
+            // Lo que ya no existía antes de enviar no se envía ni sale como enviado; si no queda
+            // nada, el aviso lo dice con los nombres de todo.
+            let here: Vec<bool> = items.iter().map(|p| exists(p)).collect();
+            let missing = !here.is_empty() && !here.contains(&true);
+            let names = if names.len() == items.len() && !missing {
+                names.into_iter().zip(&here).filter(|(_, h)| **h).map(|(n, _)| n).collect()
+            } else {
+                names
+            };
+            let items: Vec<PathBuf> = items.into_iter().zip(&here).filter(|(_, h)| **h).map(|(p, _)| p).collect();
             let (items, changed): (Vec<PathBuf>, Vec<PathBuf>) = items.into_iter().partition(|p| still.as_ref().is_none_or(|f| f(p)));
             let mut rep = if purge { purge_all(&items, &zones) } else { win::recycle::send(&items, &zones) };
             rep.failed.extend(changed.into_iter().map(|p| (p, Reason::Changed)));
-            // Lo que ya no existe (otro programa lo borró antes) está hecho.
-            rep.failed.retain(|(p, _)| exists(p));
+            // Lo que Windows borró sin pasar por la papelera ya no existe: para quien pidió el
+            // borrado está hecho, pero el aviso lo cuenta aparte.
+            let purged = rep.failed.iter().filter(|f| f.1 == Reason::Purged).count();
+            // Lo que ya no existe (otro programa lo borró mientras) está hecho.
+            rep.failed.retain(|(p, r)| *r != Reason::Purged && exists(p));
             // Lo que queda de cada fallo: una carpeta se vuelve a leer para el árbol.
             let (mut left, mut scans) = (0, Vec::new());
             for (p, _) in &rep.failed {
@@ -679,13 +731,13 @@ impl Space {
                     Err(_) => {}
                 }
             }
-            let failed = rep.failed.iter().map(|f| f.1).collect();
-            let outcome = Outcome { names, sent: size.saturating_sub(left), left, failed };
-            let _ = k.0.upgrade_in_event_loop(move |app| Self::deleted(&app, purge, rep, scans, outcome));
+            let failed = rep.failed.iter().map(|f| f.1).chain(std::iter::repeat_n(Reason::Purged, purged)).collect();
+            let outcome = Outcome { names, sent: size.saturating_sub(left), left, failed, missing };
+            let _ = k.0.upgrade_in_event_loop(move |app| Self::deleted(&app, purge, alt, rep, scans, outcome));
         });
     }
 
-    fn deleted(app: &AppWindow, purge: bool, rep: Report, scans: Vec<(PathBuf, Tree)>, outcome: Outcome) {
+    fn deleted(app: &AppWindow, purge: bool, alt: bool, rep: Report, scans: Vec<(PathBuf, Tree)>, outcome: Outcome) {
         // En el árbol de la unidad de cada elemento, si está analizada (no tiene por qué ser la que se ve).
         let after = STATE.with_borrow_mut(|st| {
             for (p, t) in scans {
@@ -714,7 +766,9 @@ impl Space {
             st.last.binned = rep.binned;
             st.last.retry.is_some()
         });
-        set_note(app, outcome_text(&outcome, purge), undo, retry && !outcome.failed.is_empty());
+        // Reintentar no sirve para lo que ya se borró del todo.
+        let again = outcome.failed.iter().any(|r| *r != Reason::Purged);
+        set_note(app, outcome_text(&outcome, purge, alt), undo, retry && again);
         app.set_locked(false);
         repaint(app);
     }

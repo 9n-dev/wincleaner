@@ -136,8 +136,9 @@ fn perform(items: &[&PathBuf], zones: &Zones) -> Report {
         return rep;
     }
     let fail_all = |rep: &mut Report, list: &[&PathBuf], hr| rep.failed.extend(list.iter().map(|p| ((*p).clone(), reason(hr))));
-    // El sink se declara antes que la operación para que viva más que ella.
-    let sink = Sink { vtbl: &SINK_VTBL, refs: Cell::new(1), zones, out: RefCell::default() };
+    // El sink se declara antes que la operación para que viva más que ella, y en el montón: si
+    // al final alguien lo sigue teniendo, se suelta sin liberarlo.
+    let sink = Box::new(Sink { vtbl: &SINK_VTBL, refs: Cell::new(1), zones, out: RefCell::default() });
     // SAFETY: CLSID e IID válidos; si tiene éxito deja un IFileOperation nuestro.
     let op = unsafe {
         Com::<IFileOperation>::out(|p| {
@@ -178,8 +179,8 @@ fn perform(items: &[&PathBuf], zones: &Zones) -> Report {
         return rep;
     }
     let mut cookie = 0;
-    // SAFETY: `sink` empieza por su vtable (repr C), no se mueve y vive más que `op`.
-    let hr = unsafe { op.Advise((&raw const sink).cast_mut().cast(), &mut cookie) };
+    // SAFETY: `sink` empieza por su vtable (repr C), no se mueve (está en una caja) y vive más que `op`.
+    let hr = unsafe { op.Advise((&raw const *sink).cast_mut().cast(), &mut cookie) };
     if hr < 0 {
         fail_all(&mut rep, &queued, hr);
         return rep;
@@ -191,7 +192,12 @@ fn perform(items: &[&PathBuf], zones: &Zones) -> Report {
     drop(op);
     // Cada elemento enviado se cuenta una vez: en la papelera, con el motivo que apuntó el sink
     // o, si el sink no llegó a verlo (operación cancelada), con el resultado de la operación.
-    let raw = sink.out.into_inner();
+    let raw = sink.out.take();
+    // Si alguien se ha quedado una referencia, liberarlo sería un uso tras liberar: se pierde.
+    // ponytail: fuga de unos bytes por envío en un caso que no debería darse.
+    if sink.refs.get() > 1 {
+        Box::leak(sink);
+    }
     let is = |a: &Path, b: &Path| same(&a.to_string_lossy(), &b.to_string_lossy());
     for p in queued {
         if let Some((_, bin)) = raw.binned.iter().find(|(o, _)| is(o, p)) {
@@ -296,8 +302,8 @@ unsafe extern "system" fn post_delete(this: *mut IFileOperationProgressSink, _fl
         // Sin ruta de la papelera no se podrá deshacer, pero está en ella.
         out.binned.push((p, bin.unwrap_or_default()));
     } else {
-        // Borrado sin pasar por la papelera: no debería ocurrir, pero que se vea.
-        out.failed.push((p, Reason::Other(hr)));
+        // Borrado sin pasar por la papelera: no debería ocurrir, pero que se vea (y no se puede deshacer).
+        out.failed.push((p, Reason::Purged));
     }
     S_OK
 }

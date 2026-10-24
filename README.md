@@ -35,11 +35,19 @@ La v2 tiene seis secciones en una barra lateral (con solo iconos por debajo de 1
 **Espacio.** Dónde se va el disco, en cuatro pestañas:
 
 - **Carpetas.** Elige una unidad y WinCleaner analiza su árbol (se puede detener): entras y sales de las carpetas, ves qué ocupa cada una y puedes abrirla en el Explorador. Las que tienen juegos dentro llevan la pastilla «Juegos».
-- **Juegos.** Los de Steam, Epic, GOG, Battle.net y Xbox, con su tamaño y cuándo los jugaste. «Desinstalar» abre el lanzador o la Configuración de Windows, nunca borra por su cuenta.
+- **Juegos.** Los de Steam, Epic, GOG, Battle.net, EA app, Ubisoft Connect y Xbox, con su tamaño y cuándo los jugaste. «Desinstalar» abre el lanzador o la Configuración de Windows, nunca borra por su cuenta.
 - **Duplicados.** Busca archivos idénticos en tus carpetas o en la unidad que elijas; conserva una copia de cada grupo (por defecto, la de la carpeta conocida) y marca las demás.
 - **Instaladores viejos.** Los `.exe`, `.msi` e imágenes de Descargas y Escritorio, con los de más de 30 días marcados y los que ya tienes instalados señalados.
 
-Borrar desde Espacio siempre manda a la papelera (con «Deshacer»); solo «Borrar del todo…» es definitivo y pide escribir BORRAR. Hay zonas protegidas que no se pueden borrar: `Windows`, `Program Files`, `Users\Public`, la carpeta Documentos, la propia carpeta de WinCleaner y las carpetas con juegos. Se ven, pero sin casilla ni botón de borrar.
+Borrar desde Espacio siempre manda a la papelera (con «Deshacer»); solo «Borrar del todo…» es definitivo y pide escribir BORRAR. Hay zonas protegidas que no se pueden borrar:
+
+- `Windows`, `Program Files`, `Program Files (x86)` y `ProgramData`;
+- la raíz de cada unidad y sus carpetas y archivos del sistema: `$Recycle.Bin`, `System Volume Information`, `Recovery`, `PerfLogs`, `Boot`, `$WinREAgent`, `$SysReset`, `Config.Msi`, `pagefile.sys`, `hiberfil.sys`, `swapfile.sys`, `DumpStack.log`, `bootmgr`, `bootnxt` y `bootsect.bak`;
+- las carpetas de los otros usuarios (también `Users\Public`);
+- tu perfil, tus carpetas conocidas (Documentos, Descargas, Escritorio, Imágenes, Música y Vídeos) y `AppData`, como carpetas: lo que tienen dentro sí se puede borrar;
+- la carpeta de WinCleaner y las carpetas con juegos.
+
+Se ven, pero sin casilla ni botón de borrar.
 
 **Limpiar.** Nueve categorías, cada una con su casilla y su tamaño (bytes y archivos) antes de borrar:
 

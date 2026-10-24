@@ -49,8 +49,10 @@ export global DupsData {
     in property <[DupStep]> steps;
     in property <float> progress;
     in property <string> subtitle: "Archivos idénticos repetidos en tus carpetas y unidades.";
-    // Los grupos del tipo elegido.
+    // Los grupos del tipo elegido (como mucho 200, los que más sobran).
     in property <[DupGroupRow]> groups;
+    // «y 1 520 grupos más»: los que no caben en la lista; vacío si caben todos.
+    in property <string> more;
     // «Enviar 412 copias a la papelera · 18,6 GB»
     in property <string> send-text;
     in property <bool> can-send;
@@ -341,6 +343,11 @@ export component DupsList {
                 group: g;
                 compact: root.compact;
                 toggled(i) => { DupsData.toggle(gi, i); }
+            }
+            if DupsData.more != "": Text {
+                text: DupsData.more;
+                color: Palette.mu;
+                horizontal-alignment: center;
             }
         }
     }

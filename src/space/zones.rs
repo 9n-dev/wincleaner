@@ -27,8 +27,11 @@ pub struct Zones {
 }
 
 /// Carpetas protegidas en la raíz de cada unidad.
-const ROOT_TREES: [&str; 9] = ["Users", "Windows", "Program Files", "Program Files (x86)", "ProgramData",
-    "$Recycle.Bin", "System Volume Information", "Recovery", "PerfLogs"];
+const ROOT_TREES: [&str; 13] = ["Users", "Windows", "Program Files", "Program Files (x86)", "ProgramData",
+    "$Recycle.Bin", "System Volume Information", "Recovery", "PerfLogs", "Boot", "$WinREAgent", "$SysReset", "Config.Msi"];
+
+/// Archivos del sistema en la raíz de cada unidad (además de `DumpStack.log*`).
+const ROOT_FILES: [&str; 6] = ["pagefile.sys", "hiberfil.sys", "swapfile.sys", "bootmgr", "bootnxt", "bootsect.bak"];
 
 fn comps(p: &str) -> Vec<&str> {
     p.split(['\\', '/']).filter(|c| !c.is_empty()).collect()
@@ -88,7 +91,7 @@ impl Zones {
         }
         if c.len() == 2 {
             let n = c[1].to_lowercase();
-            if ["pagefile.sys", "hiberfil.sys", "swapfile.sys"].contains(&n.as_str()) || n.starts_with("dumpstack.log") {
+            if ROOT_FILES.contains(&n.as_str()) || n.starts_with("dumpstack.log") {
                 return Some(Block::System);
             }
         }
@@ -114,6 +117,11 @@ impl Zones {
         }
         self.in_tree(dir) || self.in_game(dir)
             || self.known.iter().any(|(k, l)| *l == "AppData" && Self::at_or_in(dir, k))
+    }
+
+    /// Es el perfil, una carpeta conocida o algo que las contiene: no puede ser la carpeta de un juego.
+    pub fn holds_user(&self, path: &str) -> bool {
+        [&self.profile].into_iter().chain(self.known.iter().map(|k| &k.0)).any(|k| !k.is_empty() && Self::at_or_in(k, path))
     }
 
     pub fn label(&self, path: &str) -> Option<&'static str> {
@@ -188,6 +196,28 @@ mod tests {
     fn root_system_files() {
         all(&[r"C:\pagefile.sys", r"C:\HIBERFIL.SYS", r"D:\swapfile.sys", r"C:\DumpStack.log.tmp"], Some(Block::System));
         all(&[r"C:\Users\ana\pagefile.sys", r"D:\notas.txt"], None);
+        all(&[r"C:\bootmgr", r"C:\BOOTNXT", r"D:\bootsect.bak"], Some(Block::System));
+    }
+
+    #[test]
+    fn root_boot_trees_protected() {
+        all(&[r"C:\Boot", r"C:\Boot\BCD", r"D:\$WinREAgent\x", r"C:\$SysReset", r"C:\Config.Msi\a.rbf"], Some(Block::Protected));
+        all(&[r"C:\Users\ana\Boot"], None);
+        let z = z();
+        for p in [r"C:\Boot", r"C:\$WinREAgent", r"D:\$SysReset", r"C:\Config.Msi"] {
+            assert!(z.skip_walk(p), "{p}");
+        }
+    }
+
+    #[test]
+    fn holds_user_folders() {
+        let z = z();
+        for p in [r"C:\Users\ana", r"C:\Users", r"C:\", r"c:\users\ana\documents", r"C:\Users\ana\AppData"] {
+            assert!(z.holds_user(p), "{p}");
+        }
+        for p in [r"C:\Users\ana\Documents\Juego", r"D:\Juegos", r"C:\Program Files\Epic Games\Fortnite", r"C:\Users\pepe"] {
+            assert!(!z.holds_user(p), "{p}");
+        }
     }
 
     #[test]
