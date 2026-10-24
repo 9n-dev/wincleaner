@@ -28,6 +28,8 @@ pub enum Reason {
     NoBin,
     /// Zona protegida (o la ruta final no coincide con la escrita).
     Protected,
+    /// Duplicados: la copia ya no es igual a la que se conserva (o una de las dos ha desaparecido).
+    Changed,
     Other(i32),
 }
 
@@ -68,7 +70,7 @@ pub fn outcome_text(o: &Outcome, purge: bool) -> (bool, String, String) {
         (_, false) => format!("No se ha podido borrar: {what}."),
     };
     // El motivo que más importa decide la explicación; el resto se resume en «y N más».
-    let main = [Reason::NoBin, Reason::InUse, Reason::Denied, Reason::Protected]
+    let main = [Reason::NoBin, Reason::InUse, Reason::Denied, Reason::Protected, Reason::Changed]
         .into_iter()
         .find(|r| o.failed.contains(r))
         .unwrap_or(o.failed[0]);
@@ -95,6 +97,10 @@ pub fn outcome_text(o: &Outcome, purge: bool) -> (bool, String, String) {
         Reason::Protected => (
             format!("{items} {} en una carpeta protegida", pl("está", "están")),
             "WinCleaner no borra nada en las carpetas del sistema.".to_string(),
+        ),
+        Reason::Changed => (
+            format!("{items} {} cambiado desde la búsqueda", pl("ha", "han")),
+            "Vuelve a buscar duplicados.".to_string(),
         ),
         Reason::Other(_) => (format!("{items} no se {} podido borrar", pl("ha", "han")), "Vuelve a intentarlo.".to_string()),
     };
@@ -264,6 +270,15 @@ mod tests {
         assert!(text.starts_with("1 elemento no se ha podido borrar (se han liberado 38 GB; quedan 3 GB)."), "{text}");
         let o = outcome(&["a", "b"], 0, 2 * GB, vec![Reason::Protected; 2]);
         assert!(outcome_text(&o, false).2.starts_with("2 elementos están en una carpeta protegida"));
+    }
+
+    #[test]
+    fn outcome_changed() {
+        let o = outcome(&["a.mp4", "b.mp4"], GB, GB, vec![Reason::Changed]);
+        let (ok, _, text) = outcome_text(&o, false);
+        assert!(!ok);
+        assert!(text.starts_with("1 elemento ha cambiado desde la búsqueda (1 GB se han enviado"), "{text}");
+        assert!(text.ends_with("Vuelve a buscar duplicados."), "{text}");
     }
 
     #[test]

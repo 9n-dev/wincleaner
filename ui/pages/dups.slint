@@ -1,0 +1,347 @@
+// Pestaña Duplicados de Espacio: dónde buscar, la búsqueda en tres pasos y los grupos con sus
+// casillas. Todo llega por `DupsData`; los botones de la cabecera y el estado vacío van en `SpacePage`.
+import { Palette, Type, Icon } from "../theme.slint";
+import { Button, ButtonKind, Card, Check, Pill, Seg, Bar, Spinner, Tone } from "../widgets.slint";
+import { ListBox } from "clean.slint";
+
+export struct DupPlace {
+    // «Tus carpetas», «D: Datos» o «Resto de C:».
+    name: string,
+    text: string,
+    checked: bool,
+}
+
+export struct DupFileRow {
+    path: string,
+    // «14/08/2023»
+    date: string,
+    marked: bool,
+    // En una zona protegida: sin casilla, con la pastilla «Protegida».
+    protected: bool,
+}
+
+export struct DupGroupRow {
+    // «Vídeo», «Documento», …
+    kind: string,
+    // Nombre de la copia que se conserva.
+    name: string,
+    // «3 copias · sobran 4,2 GB»
+    text: string,
+    files: [DupFileRow],
+}
+
+export struct DupStep {
+    name: string,
+    // «184 210 archivos»
+    text: string,
+    // 0 pendiente, 1 en curso, 2 hecho.
+    state: int,
+}
+
+export global DupsData {
+    // 0 elegir, 1 buscando, 2 resultados.
+    in property <int> phase;
+    in property <[DupPlace]> places;
+    // 0 Todos, 1 Imágenes, 2 Documentos, 3 Vídeos, 4 Música, 5 Otros.
+    in-out property <int> kind;
+    // 0 10 KB, 1 1 MB, 2 100 MB.
+    in-out property <int> min;
+    in property <[DupStep]> steps;
+    in property <float> progress;
+    in property <string> subtitle: "Archivos idénticos repetidos en tus carpetas y unidades.";
+    // Los grupos del tipo elegido.
+    in property <[DupGroupRow]> groups;
+    // «Enviar 412 copias a la papelera · 18,6 GB»
+    in property <string> send-text;
+    in property <bool> can-send;
+    callback toggle-place(int);
+    callback search();
+    callback stop();
+    // `kind` ya tiene el tipo nuevo.
+    callback kind-changed();
+    // Grupo (de `groups`) y copia.
+    callback toggle(int, int);
+    callback send();
+    // «Buscar otra vez»: vuelve a «Dónde buscar».
+    callback again();
+}
+
+// Nombres de los filtros, para las pestañas y el estado vacío.
+export global DupsText {
+    out property <[string]> kinds: ["Todos", "Imágenes", "Documentos", "Vídeos", "Música", "Otros"];
+    out property <[string]> mins: ["10 KB", "1 MB", "100 MB"];
+}
+
+component Caption inherits Text {
+    color: Palette.mu;
+    font-size: 11.5px;
+    font-weight: 600;
+    letter-spacing: 0.6px;
+}
+
+component KindSeg inherits Seg {
+    items: DupsText.kinds;
+    current <=> DupsData.kind;
+    selected => { DupsData.kind-changed(); }
+}
+
+component PlaceLine {
+    in property <DupPlace> item;
+    callback toggled();
+
+    HorizontalLayout {
+        spacing: 12px;
+
+        VerticalLayout {
+            alignment: center;
+            Check {
+                checked: root.item.checked;
+                accessible-label: root.item.name;
+                toggled => { root.toggled(); }
+            }
+        }
+        VerticalLayout {
+            Text {
+                text: root.item.name;
+                color: Palette.tx;
+            }
+            Text {
+                text: root.item.text;
+                color: Palette.fa;
+                font-size: Type.label;
+                overflow: elide;
+            }
+        }
+    }
+}
+
+// Dónde buscar, tipo y tamaño.
+export component DupsChoose inherits Card {
+    in property <bool> compact;
+
+    Caption { text: "DÓNDE BUSCAR"; }
+    for p[i] in DupsData.places: PlaceLine {
+        item: p;
+        toggled => { DupsData.toggle-place(i); }
+    }
+    Caption {
+        text: "TIPO Y TAMAÑO";
+        height: self.preferred-height + 14px;
+        vertical-alignment: bottom;
+    }
+    // En estrecho, el tamaño baja a la línea siguiente.
+    Rectangle {
+        height: root.compact ? kinds.preferred-height * 2 + 10px : kinds.preferred-height;
+
+        kinds := KindSeg {
+            x: 0;
+            y: 0;
+            width: self.preferred-width;
+            height: self.preferred-height;
+        }
+        Seg {
+            x: root.compact ? 0 : kinds.preferred-width + 10px;
+            y: root.compact ? kinds.preferred-height + 10px : 0;
+            width: self.preferred-width;
+            height: self.preferred-height;
+            items: ["Desde 10 KB", DupsText.mins[1], DupsText.mins[2]];
+            current <=> DupsData.min;
+        }
+    }
+    HorizontalLayout {
+        padding-top: 6px;
+        alignment: start;
+        Button {
+            text: "Buscar duplicados";
+            icon: "search";
+            kind: ButtonKind.primary;
+            clicked => { DupsData.search(); }
+        }
+    }
+}
+
+// Los tres pasos de la búsqueda, con su barra.
+export component DupsSearching inherits Card {
+    for s in DupsData.steps: HorizontalLayout {
+        spacing: 10px;
+        padding-top: 2px;
+        padding-bottom: 2px;
+
+        VerticalLayout {
+            alignment: center;
+            width: 16px;
+            if s.state == 2: Icon {
+                name: "check";
+                color: Palette.ac;
+            }
+            if s.state == 1: Spinner { }
+            if s.state == 0: Rectangle {
+                width: 16px;
+                height: 16px;
+                border-radius: 8px;
+                border-width: 2px;
+                border-color: Palette.line2;
+            }
+        }
+        Text {
+            text: s.name;
+            color: s.state == 0 ? Palette.fa : Palette.tx;
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+        }
+        Text {
+            text: s.text;
+            color: Palette.mu;
+            font-size: Type.label;
+            vertical-alignment: center;
+        }
+    }
+    Rectangle { height: 2px; }
+    Bar { value: DupsData.progress; }
+}
+
+// Filtro de tipo de los resultados.
+export component DupsToolbar {
+    VerticalLayout {
+        spacing: 8px;
+        HorizontalLayout {
+            alignment: start;
+            KindSeg { }
+        }
+        Text {
+            text: "Se conserva siempre al menos una copia de cada grupo";
+            color: Palette.fa;
+            font-size: Type.label;
+            horizontal-alignment: right;
+        }
+    }
+}
+
+component FileLine {
+    in property <DupFileRow> item;
+    in property <bool> first;
+    in property <bool> compact;
+    callback toggled();
+    accessible-role: list-item;
+    accessible-label: root.item.path;
+
+    if !root.first: Rectangle {
+        y: 0;
+        height: 1px;
+        background: Palette.line;
+    }
+    HorizontalLayout {
+        padding-top: 11px;
+        padding-bottom: 11px;
+        padding-left: 16px;
+        padding-right: 16px;
+        spacing: 14px;
+
+        VerticalLayout {
+            alignment: center;
+            width: 18px;
+            if !root.item.protected: Check {
+                checked: root.item.marked;
+                accessible-label: root.item.path;
+                toggled => { root.toggled(); }
+            }
+        }
+        Text {
+            text: root.item.path;
+            color: Palette.tx;
+            font-family: Type.mono;
+            font-size: Type.label;
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        if !root.compact: Text {
+            width: 90px;
+            text: root.item.date;
+            color: Palette.fa;
+            font-size: Type.label;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+        }
+        if root.item.protected || !root.item.marked: VerticalLayout {
+            alignment: center;
+            Pill {
+                text: root.item.protected ? "Protegida" : "Se conserva";
+                icon: root.item.protected ? "lock" : "";
+                kind: root.item.protected ? Tone.neutral : Tone.ok;
+            }
+        }
+    }
+}
+
+component GroupCard inherits ListBox {
+    in property <DupGroupRow> group;
+    in property <bool> compact;
+    callback toggled(int);
+
+    Rectangle {
+        background: Palette.bg;
+        border-top-left-radius: 12px;
+        border-top-right-radius: 12px;
+
+        HorizontalLayout {
+            padding-top: 10px;
+            padding-bottom: 10px;
+            padding-left: 16px;
+            padding-right: 16px;
+            spacing: 10px;
+
+            VerticalLayout {
+                alignment: center;
+                Pill { text: root.group.kind; }
+            }
+            Text {
+                text: root.group.name;
+                color: Palette.tx;
+                font-weight: 600;
+                horizontal-stretch: 1;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            Text {
+                text: root.group.text;
+                color: Palette.mu;
+                font-size: Type.label;
+                vertical-alignment: center;
+            }
+        }
+        Rectangle {
+            y: parent.height - 1px;
+            height: 1px;
+            background: Palette.line;
+        }
+    }
+    for f[i] in root.group.files: FileLine {
+        item: f;
+        first: i == 0;
+        compact: root.compact;
+        toggled => { root.toggled(i); }
+    }
+}
+
+// Los grupos: crece hasta su contenido y, si no cabe, se desplaza por dentro.
+export component DupsList {
+    in property <bool> compact;
+    preferred-height: list.preferred-height;
+    min-height: 100px;
+
+    Flickable {
+        content-width: self.width;
+        content-height: list.preferred-height;
+
+        list := VerticalLayout {
+            width: parent.width;
+            spacing: 18px;
+            for g[gi] in DupsData.groups: GroupCard {
+                group: g;
+                compact: root.compact;
+                toggled(i) => { DupsData.toggle(gi, i); }
+            }
+        }
+    }
+}

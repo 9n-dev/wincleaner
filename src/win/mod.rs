@@ -358,8 +358,8 @@ pub fn known_dirs() -> Vec<(PathBuf, &'static str)> {
         (&FOLDERID_Desktop, "Escritorio"),
         (&FOLDERID_Downloads, "Descargas"),
         (&FOLDERID_Pictures, "Imágenes"),
-        (&FOLDERID_Music, "Música"),
         (&FOLDERID_Videos, "Vídeos"),
+        (&FOLDERID_Music, "Música"),
     ]
     .into_iter()
     .filter_map(|(id, label)| known_folder(id).map(|p| (p, label)))

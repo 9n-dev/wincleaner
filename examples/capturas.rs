@@ -351,6 +351,63 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     modal.set_open(false);
+
+    // Duplicados, con los datos de `duplicados*()` y `DUPS` de las maquetas: dónde buscar,
+    // buscando, resultados y vacío.
+    use wincleaner::ui::{DupFileRow, DupGroupRow, DupPlace, DupStep, DupsData};
+    let dups = app.global::<DupsData>();
+    data.set_tab(2);
+    dups.set_places(model(
+        [
+            ("Tus carpetas", "Documentos, Escritorio, Descargas, Imágenes, Vídeos y Música", true),
+            ("D: Datos", "Toda la unidad", true),
+            ("Resto de C:", "Sin Windows, Archivos de programa ni AppData", false),
+        ]
+        .map(|(n, t, c)| DupPlace { name: n.into(), text: t.into(), checked: c })
+        .to_vec(),
+    ));
+    dups.set_steps(model(
+        [("Listando archivos", "184 210 archivos", 2), ("Comparando tamaños", "6 120 posibles duplicados", 2), ("Comparando contenido", "2 340 de 6 120", 1)]
+            .map(|(n, t, s)| DupStep { name: n.into(), text: t.into(), state: s })
+            .to_vec(),
+    ));
+    dups.set_progress(0.38);
+    let grupos = [
+        ("Vídeo", "vacaciones_2023.mp4", "3 copias · sobran 4,2 GB", vec![
+            (r"C:\Users\ana\Videos\vacaciones_2023.mp4", "14/08/2023", false),
+            (r"C:\Users\ana\Downloads\vacaciones_2023.mp4", "02/09/2023", true),
+            (r"D:\Copia\Vídeos\vacaciones_2023.mp4", "10/01/2024", true),
+        ]),
+        ("PDF", "Contrato_alquiler.pdf", "2 copias · sobran 2,1 MB", vec![
+            (r"C:\Users\ana\Documents\Contrato_alquiler.pdf", "03/02/2025", false),
+            (r"C:\Users\ana\Downloads\Contrato_alquiler (1).pdf", "03/02/2025", true),
+        ]),
+        ("Imagen", "IMG_4821.png", "2 copias · sobran 6,8 MB", vec![
+            (r"C:\Users\ana\Pictures\Móvil\IMG_4821.png", "21/06/2026", false),
+            (r"C:\Users\ana\Desktop\IMG_4821.png", "22/06/2026", true),
+        ]),
+    ]
+    .map(|(k, n, t, fs)| DupGroupRow {
+        kind: k.into(),
+        name: n.into(),
+        text: t.into(),
+        files: model(fs.into_iter().map(|(p, d, m)| DupFileRow { path: p.into(), date: d.into(), marked: m, protected: false }).collect()),
+    });
+    dups.set_send_text("Enviar 412 copias a la papelera · 18,6 GB".into());
+    dups.set_can_send(true);
+    for (nombre, phase, subtitulo, rows) in [
+        ("duplicados", 0, "Archivos idénticos repetidos en tus carpetas y unidades.", Vec::new()),
+        ("duplicados-buscando", 1, "Buscando…", Vec::new()),
+        ("duplicados-resultados", 2, "214 grupos · sobran 18,6 GB", grupos.to_vec()),
+        ("duplicados-vacio", 2, "Búsqueda terminada en 48 s", Vec::new()),
+    ] {
+        dups.set_phase(phase);
+        dups.set_subtitle(subtitulo.into());
+        dups.set_groups(model(rows));
+        for (suffix, w, h) in [("", 1100, 720), ("-min", 880, 600)] {
+            guarda(&format!("wces-{nombre}{suffix}"), &headless::render(app.window(), w, h), w, h)?;
+        }
+    }
     data.set_tab(0);
 
     // Programas, con los datos de `PROGS` de las maquetas.

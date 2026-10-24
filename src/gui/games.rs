@@ -11,7 +11,7 @@ use slint::{ComponentHandle, Model, VecModel, Weak};
 use wincleaner::format;
 use wincleaner::space::games::{Game, Launcher, Uninstall};
 use wincleaner::space::tree::Tree;
-use wincleaner::ui::{AppWindow, Confirm, GameRow, GamesData, SpaceData, confirm};
+use wincleaner::ui::{AppWindow, Confirm, GameRow, GamesData, confirm};
 
 use super::programs::{self, Programs};
 use super::space::Space;
@@ -87,12 +87,6 @@ impl Games {
     pub fn new(app: &AppWindow, programs: Programs, space: Space) -> Games {
         let g = Games { app: app.as_weak(), programs, space };
         let k = g.clone();
-        app.global::<SpaceData>().on_tab_shown(move |i| {
-            if i == 1 {
-                k.load();
-            }
-        });
-        let k = g.clone();
         app.global::<GamesData>().on_uninstall(move |i| k.ask(i));
         // También al abrir: así Carpetas sabe desde el principio qué carpetas son de juegos.
         g.load();
@@ -106,8 +100,8 @@ impl Games {
     }
 
     /// Lee la lista en un hilo y, después, en el mismo hilo, mide los juegos que no dicen su tamaño.
-    /// La lista de antes se queda hasta que llega la nueva.
-    fn load(&self) {
+    /// La lista de antes se queda hasta que llega la nueva. También al entrar en la pestaña.
+    pub(super) fn load(&self) {
         if STATE.with_borrow_mut(|st| std::mem::replace(&mut st.loading, true)) {
             return;
         }

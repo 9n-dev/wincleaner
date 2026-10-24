@@ -12,6 +12,7 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 use slint::{ComponentHandle, ModelRc, Timer, TimerMode, VecModel, Weak};
 use wincleaner::categories::is_link;
 use wincleaner::space::deletable;
+use wincleaner::space::dups::{kind, kind_label};
 use wincleaner::space::recycle::{Outcome, Reason, outcome_text, outermost, undo_text};
 use wincleaner::space::tree::{Id, Kind, Tree};
 use wincleaner::space::zones::{Block, Zones};
@@ -24,17 +25,18 @@ use crate::win::recycle::Report;
 /// Un análisis concreto: raíz de la unidad y cuándo terminó. Los `Id` solo valen en ese árbol.
 type At = (String, Instant);
 type After = Box<dyn FnOnce(&AppWindow, &Report)>;
-type Retry = Rc<dyn Fn(&Space, &AppWindow)>;
+/// «Reintentar»: lo pone quien pide el borrado.
+pub(super) type Retry = Rc<dyn Fn(&Space, &AppWindow)>;
+/// Se mira en el hilo, justo antes de enviar cada elemento: `false` lo deja fuera como `Changed`.
+pub(super) type Still = Box<dyn Fn(&Path) -> bool + Send>;
 
 /// Lo que deja el último borrado para «Deshacer» y «Reintentar».
 #[derive(Default)]
 struct Last {
     names: Vec<String>,
     binned: Vec<(PathBuf, PathBuf)>,
-    /// Nodos enviados a la papelera, en el árbol `at`: al deshacer vuelven a verse.
-    at: Option<At>,
-    ids: Vec<(PathBuf, Id)>,
-    /// Lo pone quien pidió el borrado, después de pedirlo.
+    /// Nodos enviados a la papelera, con el árbol de cada uno: al deshacer vuelven a verse.
+    ids: Vec<(At, PathBuf, Id)>,
     retry: Option<Retry>,
 }
 
@@ -119,7 +121,11 @@ fn row(tree: &Tree, id: Id, i: usize, total: u64, zones: Option<&Zones>) -> Spac
         _ => "",
     };
     let sub = match n.kind {
-        Kind::File => format::date_dmy(format::ymd(UNIX_EPOCH + Duration::from_secs(n.mtime.into()))),
+        Kind::File => format!(
+            "{} · {}",
+            kind_label(kind(&n.name)),
+            format::date_dmy(format::ymd(UNIX_EPOCH + Duration::from_secs(n.mtime.into())))
+        ),
         Kind::Rest => "Juntos".into(),
         _ => path.display().to_string(),
     };
@@ -275,6 +281,16 @@ fn show(app: &AppWindow) {
 /// El análisis que se ve.
 fn here(st: &State) -> Option<At> {
     st.trees.get(&st.root).map(|t| (st.root.clone(), t.1))
+}
+
+/// Se ve la pestaña Carpetas: solo entonces se repinta al terminar un borrado.
+fn folders_visible(app: &AppWindow) -> bool {
+    app.global::<SpaceData>().get_tab() == 0
+}
+
+/// El análisis (y su árbol) en el que está `p`, si alguna unidad analizada lo tiene.
+fn tree_of<'a>(trees: &'a mut HashMap<String, (Tree, Instant)>, p: &Path) -> Option<(At, &'a mut Tree)> {
+    trees.iter_mut().find(|(_, t)| t.0.find(p).is_some()).map(|(r, t)| ((r.clone(), t.1), &mut t.0))
 }
 
 /// El árbol de `at`, si sigue siendo ese análisis (no se ha vuelto a analizar).
@@ -593,25 +609,30 @@ impl Space {
                 STATE.with_borrow_mut(|st| tree_at(&mut st.trees, &gone).map(|t| t.remove(id)));
             }
         };
-        if purge {
-            self.delete(true, vec![path], vec![name], size, Box::new(after));
-        } else {
-            self.send_to_bin(vec![path], vec![name], size, after);
-        }
         // Reintentar la papelera se repite tal cual (se puede recuperar); borrar del todo vuelve a pedir BORRAR.
         let retry: Retry = Rc::new(move |k, app| if purge { k.ask_purge(app, at.clone(), id) } else { k.trash(app, at.clone(), id, false) });
-        STATE.with_borrow_mut(|st| st.last.retry = Some(retry));
+        self.delete(purge, vec![path], vec![name], size, Some(retry), None, Box::new(after));
     }
 
-    /// Envía `items` a la papelera en un hilo, con la ventana bloqueada. `names` va en paralelo a
-    /// `items` y `size` es lo que suman. Al volver, rehace lo que falló en el árbol, llama a
-    /// `after` (lo que no está en `failed` ya no existe), rellena el aviso y desbloquea.
-    /// Para «Reintentar», quien llama pone `STATE.last.retry` después.
-    pub(super) fn send_to_bin(&self, items: Vec<PathBuf>, names: Vec<String>, size: u64, after: impl FnOnce(&AppWindow, &Report) + 'static) {
-        self.delete(false, items, names, size, Box::new(after));
+    /// Envía `items` a la papelera en un hilo, con la ventana bloqueada, desde cualquier pestaña.
+    /// `names` va en paralelo a `items` y `size` es lo que suman. En el hilo, lo que no pase
+    /// `still` no se envía y falla como `Changed`. Al volver, rehace lo que falló en los árboles,
+    /// llama a `after` (lo que no está en `failed` ya no existe), rellena el aviso (con
+    /// «Reintentar», que llama a `retry`, si algo falló) y desbloquea.
+    pub(super) fn send_to_bin(
+        &self,
+        items: Vec<PathBuf>,
+        names: Vec<String>,
+        size: u64,
+        retry: Retry,
+        still: Option<Still>,
+        after: impl FnOnce(&AppWindow, &Report) + 'static,
+    ) {
+        self.delete(false, items, names, size, Some(retry), still, Box::new(after));
     }
 
-    fn delete(&self, purge: bool, items: Vec<PathBuf>, names: Vec<String>, size: u64, after: After) {
+    #[allow(clippy::too_many_arguments)]
+    fn delete(&self, purge: bool, items: Vec<PathBuf>, names: Vec<String>, size: u64, retry: Option<Retry>, still: Option<Still>, after: After) {
         let Some(app) = self.0.upgrade().filter(|a| !a.get_locked()) else { return };
         let Some(zones) = STATE.with_borrow(|st| st.zones.clone()) else { return };
         // Sin repetidos ni lo que ya va dentro de otro.
@@ -619,16 +640,17 @@ impl Space {
         let names = if names.len() == items.len() { keep.iter().map(|&i| names[i].clone()).collect() } else { names };
         let items: Vec<PathBuf> = keep.iter().map(|&i| items[i].clone()).collect();
         // Un borrado nuevo sustituye al aviso anterior y pierde su deshacer.
-        let at = STATE.with_borrow_mut(|st| {
-            st.last = Last::default();
+        STATE.with_borrow_mut(|st| {
+            st.last = Last { retry, ..Last::default() };
             st.after = Some(after);
-            here(st)
         });
         app.global::<SpaceData>().set_note(0);
         app.set_locked(true);
         let k = self.clone();
         std::thread::spawn(move || {
+            let (items, changed): (Vec<PathBuf>, Vec<PathBuf>) = items.into_iter().partition(|p| still.as_ref().is_none_or(|f| f(p)));
             let mut rep = if purge { purge_all(&items, &zones) } else { win::recycle::send(&items, &zones) };
+            rep.failed.extend(changed.into_iter().map(|p| (p, Reason::Changed)));
             // Lo que ya no existe (otro programa lo borró antes) está hecho.
             rep.failed.retain(|(p, _)| exists(p));
             // Lo que queda de cada fallo: una carpeta se vuelve a leer para el árbol.
@@ -647,20 +669,28 @@ impl Space {
             }
             let failed = rep.failed.iter().map(|f| f.1).collect();
             let outcome = Outcome { names, sent: size.saturating_sub(left), left, failed };
-            let _ = k.0.upgrade_in_event_loop(move |app| Self::deleted(&app, purge, at, rep, scans, outcome));
+            let _ = k.0.upgrade_in_event_loop(move |app| Self::deleted(&app, purge, rep, scans, outcome));
         });
     }
 
-    fn deleted(app: &AppWindow, purge: bool, at: Option<At>, rep: Report, scans: Vec<(PathBuf, Tree)>, outcome: Outcome) {
+    fn deleted(app: &AppWindow, purge: bool, rep: Report, scans: Vec<(PathBuf, Tree)>, outcome: Outcome) {
+        // En el árbol de la unidad de cada elemento, si está analizada (no tiene por qué ser la que se ve).
         let after = STATE.with_borrow_mut(|st| {
-            if let Some(tree) = tree_at(&mut st.trees, &at) {
-                for (p, t) in scans {
-                    if let Some(id) = tree.find(&p) {
-                        tree.graft(id, t);
-                    }
+            for (p, t) in scans {
+                if let Some((_, tree)) = tree_of(&mut st.trees, &p)
+                    && let Some(id) = tree.find(&p)
+                {
+                    tree.graft(id, t);
                 }
-                st.last.ids = rep.binned.iter().filter_map(|(p, _)| Some((p.clone(), tree.find(p)?))).collect();
             }
+            st.last.ids = rep
+                .binned
+                .iter()
+                .filter_map(|(p, _)| {
+                    let (at, tree) = tree_of(&mut st.trees, p)?;
+                    Some((at, p.clone(), tree.find(p)?))
+                })
+                .collect();
             st.after.take()
         });
         if let Some(f) = after {
@@ -668,15 +698,16 @@ impl Space {
         }
         let undo = !rep.binned.is_empty();
         let retry = STATE.with_borrow_mut(|st| {
-            st.last.at = at;
             st.last.names = outcome.names.clone();
             st.last.binned = rep.binned;
             st.last.retry.is_some()
         });
         set_note(app, outcome_text(&outcome, purge), undo, retry && !outcome.failed.is_empty());
         app.set_locked(false);
-        units(app);
-        show(app);
+        if folders_visible(app) {
+            units(app);
+            show(app);
+        }
     }
 
     /// «Deshacer»: devuelve lo enviado a la papelera, en un hilo.
@@ -684,7 +715,7 @@ impl Space {
         if app.get_locked() {
             return;
         }
-        let Last { names, binned, at, ids, .. } = STATE.with_borrow_mut(|st| std::mem::take(&mut st.last));
+        let Last { names, binned, ids, .. } = STATE.with_borrow_mut(|st| std::mem::take(&mut st.last));
         if binned.is_empty() {
             return;
         }
@@ -693,17 +724,17 @@ impl Space {
         let k = self.clone();
         std::thread::spawn(move || {
             let failed = win::recycle::undo(&binned);
-            let _ = k.0.upgrade_in_event_loop(move |app| Self::undone(&app, names, at, ids, failed));
+            let _ = k.0.upgrade_in_event_loop(move |app| Self::undone(&app, names, ids, failed));
         });
     }
 
-    fn undone(app: &AppWindow, names: Vec<String>, at: Option<At>, ids: Vec<(PathBuf, Id)>, failed: Vec<PathBuf>) {
+    fn undone(app: &AppWindow, names: Vec<String>, ids: Vec<(At, PathBuf, Id)>, failed: Vec<PathBuf>) {
         STATE.with_borrow_mut(|st| {
-            if let Some(tree) = tree_at(&mut st.trees, &at) {
-                for (p, id) in &ids {
-                    if !failed.contains(p) {
-                        tree.restore(*id);
-                    }
+            for (at, p, id) in ids {
+                if !failed.contains(&p)
+                    && let Some(tree) = tree_at(&mut st.trees, &Some(at))
+                {
+                    tree.restore(id);
                 }
             }
         });
@@ -715,7 +746,38 @@ impl Space {
         };
         set_note(app, undo_text(&names, &failed), false, false);
         app.set_locked(false);
-        units(app);
-        show(app);
+        if folders_visible(app) {
+            units(app);
+            show(app);
+        }
+    }
+
+    /// Se vuelve a la pestaña Carpetas: se repinta lo que se veía (un borrado desde otra pestaña
+    /// puede haber cambiado tamaños y espacio libre). Mientras se analiza no hay nada que repintar.
+    pub(super) fn shown(&self) {
+        self.with(|app| match app.global::<SpaceData>().get_phase() {
+            0 => units(app),
+            2 => {
+                units(app);
+                show(app);
+            }
+            _ => {}
+        });
+    }
+
+    /// Las zonas protegidas; `None` si no se pudieron leer (entonces no se borra nada).
+    pub(super) fn zones(&self) -> Option<Zones> {
+        STATE.with_borrow(|st| st.zones.clone())
+    }
+
+    /// Lo borrado desde otra pestaña sale de los árboles de todas las unidades analizadas.
+    pub(super) fn forget(&self, files: &[(PathBuf, u64)]) {
+        STATE.with_borrow_mut(|st| {
+            for (tree, _) in st.trees.values_mut() {
+                for (p, size) in files {
+                    tree.forget(p, *size);
+                }
+            }
+        });
     }
 }
