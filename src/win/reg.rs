@@ -12,7 +12,7 @@ use winapi::um::winnt::{
     KEY_READ, KEY_SET_VALUE, KEY_WOW64_32KEY, KEY_WOW64_64KEY, REG_BINARY, REG_DWORD, REG_EXPAND_SZ, REG_SZ,
 };
 use winapi::um::winreg::{
-    HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RegCloseKey, RegEnumKeyExW, RegEnumValueW, RegOpenKeyExW, RegQueryValueExW,
+    HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RegCloseKey, RegEnumKeyExW, RegEnumValueW, RegCreateKeyExW, RegOpenKeyExW, RegQueryValueExW,
     RegSetValueExW, REGSAM,
 };
 use wincleaner::programs::{Hive, RawEntry};
@@ -23,6 +23,15 @@ use super::wide;
 const MAX_DATA: DWORD = 1 << 20;
 
 pub const UNINSTALL: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall";
+
+/// Raíz y vista: `Machine64`/`Machine32` son HKLM con la vista de 64 o de 32 bits; `User`, HKCU.
+fn view(hive: Hive) -> (HKEY, REGSAM) {
+    match hive {
+        Hive::Machine64 => (HKEY_LOCAL_MACHINE, KEY_WOW64_64KEY),
+        Hive::Machine32 => (HKEY_LOCAL_MACHINE, KEY_WOW64_32KEY),
+        Hive::User => (HKEY_CURRENT_USER, 0),
+    }
+}
 
 /// Clave abierta; se cierra al soltarla.
 struct Key(HKEY);
@@ -35,17 +44,25 @@ impl Drop for Key {
 }
 
 impl Key {
-    /// `Machine64`/`Machine32` abren HKLM con la vista de 64 o de 32 bits; `User`, HKCU.
     fn open(hive: Hive, path: &str, access: REGSAM) -> Result<Key, u32> {
-        let (root, view) = match hive {
-            Hive::Machine64 => (HKEY_LOCAL_MACHINE, KEY_WOW64_64KEY),
-            Hive::Machine32 => (HKEY_LOCAL_MACHINE, KEY_WOW64_32KEY),
-            Hive::User => (HKEY_CURRENT_USER, 0),
-        };
+        let (root, view) = view(hive);
         let p = wide(path);
         let mut h: HKEY = null_mut();
         // SAFETY: `p` es UTF-16 terminada en nulo; `h` recibe la clave, que cierra `Drop`.
         let r = unsafe { RegOpenKeyExW(root, p.as_ptr(), 0, access | view, &mut h) };
+        if r as u32 == ERROR_SUCCESS && !h.is_null() { Ok(Key(h)) } else { Err(r as u32) }
+    }
+
+    /// Como `open`, con permiso de escritura, y la crea si no está.
+    fn create(hive: Hive, path: &str) -> Result<Key, u32> {
+        let (root, view) = view(hive);
+        let p = wide(path);
+        let mut h: HKEY = null_mut();
+        // SAFETY: `p` es UTF-16 terminada en nulo; sin clase ni seguridad; `h` recibe la clave,
+        // que cierra `Drop`.
+        let r = unsafe {
+            RegCreateKeyExW(root, p.as_ptr(), 0, null_mut(), 0, KEY_SET_VALUE | view, null_mut(), &mut h, null_mut())
+        };
         if r as u32 == ERROR_SUCCESS && !h.is_null() { Ok(Key(h)) } else { Err(r as u32) }
     }
 
@@ -123,6 +140,12 @@ fn expand(w: &[u16]) -> Option<String> {
     Some(String::from_utf16_lossy(&buf[..fin]))
 }
 
+/// `%SystemRoot%\…` → `C:\Windows\…`; si falla, el texto tal cual.
+pub fn expand_env(s: &str) -> String {
+    let w: Vec<u16> = s.encode_utf16().collect();
+    expand(&w).unwrap_or_else(|| s.to_string())
+}
+
 #[expect(dead_code, reason = "API de la capa; de momento basta con `uninstall_entries`")]
 pub fn read_str(hive: Hive, path: &str, name: &str) -> Option<String> {
     Key::open(hive, path, KEY_READ).ok()?.str(name)
@@ -134,16 +157,15 @@ pub fn read_dword(hive: Hive, path: &str, name: &str) -> Option<u32> {
 }
 
 /// Solo `REG_BINARY`.
-#[expect(dead_code, reason = "lo usa la sección Arranque (Task 11)")]
 pub fn read_binary(hive: Hive, path: &str, name: &str) -> Option<Vec<u8>> {
     let (kind, data) = Key::open(hive, path, KEY_READ).ok()?.raw(name)?;
     (kind == REG_BINARY).then_some(data)
 }
 
-/// Escribe un `REG_BINARY` en una clave que ya existe; el error es el código de Win32.
-#[expect(dead_code, reason = "lo usa la sección Arranque (Task 11)")]
+/// Escribe un `REG_BINARY`; la clave se crea si no está (un usuario que nunca ha desactivado
+/// nada no tiene `StartupApproved\Run`). El error es el código de Win32.
 pub fn write_binary(hive: Hive, path: &str, name: &str, data: &[u8]) -> Result<(), u32> {
-    let k = Key::open(hive, path, KEY_SET_VALUE)?;
+    let k = Key::create(hive, path)?;
     let len = DWORD::try_from(data.len()).map_err(|_| ERROR_INVALID_PARAMETER)?;
     let n = wide(name);
     // SAFETY: `n` termina en nulo y `data` mide `len` bytes.
@@ -174,7 +196,6 @@ pub fn subkeys(hive: Hive, path: &str) -> Vec<String> {
 }
 
 /// Valores de texto (`REG_SZ`, `REG_EXPAND_SZ` expandido) como `(nombre, dato)`; los demás se saltan.
-#[expect(dead_code, reason = "lo usa la sección Arranque (Task 11)")]
 pub fn values(hive: Hive, path: &str) -> Vec<(String, String)> {
     let Ok(k) = Key::open(hive, path, KEY_READ) else { return Vec::new() };
     // Un nombre de valor mide como mucho 16 383 caracteres.

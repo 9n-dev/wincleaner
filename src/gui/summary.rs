@@ -50,10 +50,14 @@ pub fn set_programs(app: &AppWindow, title: &str, biggest: Option<(&str, u64)>) 
     d.set_programs_text(text.unwrap_or_default().into());
 }
 
-/// Tarjeta de Procesos: «128 procesos · 5,4 GB». La segunda línea (programas de arranque)
-/// la rellena Arranque.
+/// Tarjeta de Procesos: «128 procesos · 5,4 GB».
 pub fn set_procs(app: &AppWindow, title: &str) {
     app.global::<SummaryData>().set_procs_title(title.into());
+}
+
+/// Segunda línea de la tarjeta de Procesos: «11 programas arrancan con Windows».
+pub fn set_procs_text(app: &AppWindow, text: &str) {
+    app.global::<SummaryData>().set_procs_text(text.into());
 }
 
 /// Conecta la sección y lee las unidades por primera vez.

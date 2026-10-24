@@ -1,6 +1,8 @@
-//! Sección Procesos, pestaña «En ejecución»: los procesos agrupados por programa, con firma,
-//! CPU y memoria, refrescados cada 2 s solo mientras se ve la sección. La lista, las firmas,
-//! las descripciones y los iconos se leen en un hilo; terminar se confirma siempre con el modal.
+//! Sección Procesos. «En ejecución»: los procesos agrupados por programa, con firma, CPU y
+//! memoria, refrescados cada 2 s solo mientras se ve la sección. La lista, las firmas, las
+//! descripciones y los iconos se leen en un hilo; terminar se confirma siempre con el modal.
+//! «Arrancan con Windows»: se lee al abrir WinCleaner y al entrar en la sección; el
+//! interruptor escribe en `StartupApproved` sin confirmación, porque se puede deshacer.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -13,11 +15,13 @@ use slint::{Color, ComponentHandle, Image, Model, Rgba8Pixel, SharedPixelBuffer,
 use wincleaner::format;
 use wincleaner::paths;
 use wincleaner::procs::{self, Group};
-use wincleaner::ui::{AppWindow, Confirm, ProcRow, ProcsData, confirm};
+use wincleaner::startup;
+use wincleaner::ui::{AppWindow, Confirm, ProcRow, ProcsData, StartRow, confirm};
 
 use super::{programs, summary};
 use crate::win;
 use crate::win::proc::TermError;
+use crate::win::startup::Item;
 use crate::win::trust::{self, Signature};
 
 type Icon = Option<SharedPixelBuffer<Rgba8Pixel>>;
@@ -56,6 +60,9 @@ struct State {
     /// lista (se perderían clics, foco y el anuncio del lector de pantalla).
     model: Rc<VecModel<ProcRow>>,
     timer: Timer,
+    /// Lo que arranca con Windows; `toggle(i)` es un índice de aquí y de `starts_model`.
+    starts: Vec<Item>,
+    starts_model: Rc<VecModel<StartRow>>,
 }
 
 thread_local! {
@@ -114,7 +121,7 @@ fn pct(p: f32) -> String {
 
 /// Pone `rows` en `model` sin cambiar de modelo: las filas comunes se cambian solo si son
 /// distintas, y la cola se añade o se quita.
-fn update(model: &VecModel<ProcRow>, rows: Vec<ProcRow>) {
+fn update<T: Clone + PartialEq + 'static>(model: &VecModel<T>, rows: Vec<T>) {
     let old = model.row_count();
     while model.row_count() > rows.len() {
         model.remove(model.row_count() - 1);
@@ -142,6 +149,9 @@ impl Procs {
         let c = Procs { app: app.as_weak(), system_root: win::windows_dir().unwrap_or_default(), temp };
         let data = app.global::<ProcsData>();
         data.set_rows(STATE.with_borrow(|st| st.model.clone()).into());
+        data.set_starts(STATE.with_borrow(|st| st.starts_model.clone()).into());
+        let k = c.clone();
+        data.on_toggle(move |i| k.toggle(i));
         let k = c.clone();
         data.on_visible(move |v| k.visible(v));
         let k = c.clone();
@@ -157,11 +167,14 @@ impl Procs {
         let weak = app.as_weak();
         data.on_dismiss(move || {
             if let Some(app) = weak.upgrade() {
-                app.global::<ProcsData>().set_denied(false);
+                let data = app.global::<ProcsData>();
+                data.set_denied(false);
+                data.set_start_error("".into());
             }
         });
         // Una vuelta para la tarjeta del Resumen.
         c.refresh(false);
+        c.load_starts();
         c
     }
 
@@ -174,6 +187,7 @@ impl Procs {
                 st.timer.start(TimerMode::Repeated, Duration::from_secs(2), move || k.refresh(true));
             });
             self.refresh(true);
+            self.load_starts();
         } else {
             STATE.with_borrow(|st| st.timer.stop());
             // Al volver al Resumen, su tarjeta se pone al día.
@@ -340,4 +354,76 @@ impl Procs {
             });
         });
     }
+
+    /// Lee en un hilo lo que arranca con Windows, con los iconos.
+    fn load_starts(&self) {
+        let k = self.clone();
+        std::thread::spawn(move || {
+            // Los accesos directos y SHGetFileInfoW (el icono de reserva) necesitan COM.
+            let (items, icons): (Vec<Item>, Vec<Icon>) = win::with_com(|| {
+                let items = win::startup::list();
+                let icons = items.iter().map(|it| it.exe.as_deref().and_then(|e| win::icon::load(e, 0))).collect();
+                (items, icons)
+            });
+            let _ = k.app.clone().upgrade_in_event_loop(move |app| {
+                let admin = app.get_admin();
+                let rows = items
+                    .iter()
+                    .zip(icons)
+                    .map(|(it, icon)| StartRow {
+                        name: it.name.as_str().into(),
+                        r#where: startup::where_text(it.source).into(),
+                        on: it.enabled,
+                        needs_admin: startup::needs_admin(it.source) && !admin,
+                        // La regla llega con las comprobaciones de seguridad.
+                        review: false,
+                        icon: icon.map(Image::from_rgba8).unwrap_or_default(),
+                        letter: letter(&it.name).into(),
+                        tint: programs::tint(&it.name),
+                    })
+                    .collect();
+                set_starts_summary(&app, &items);
+                STATE.with_borrow_mut(|st| {
+                    update(&st.starts_model, rows);
+                    st.starts = items;
+                });
+            });
+        });
+    }
+
+    /// El interruptor `i` ya ha cambiado `on` en su fila: se escribe eso. Si falla, se avisa
+    /// y se vuelve a leer la lista, que devuelve el interruptor a como está de verdad.
+    fn toggle(&self, i: i32) {
+        let Some(app) = self.app.upgrade() else { return };
+        let Some((i, item, on)) = STATE.with_borrow(|st| {
+            let i = usize::try_from(i).ok()?;
+            Some((i, st.starts.get(i)?.clone(), st.starts_model.row_data(i)?.on))
+        }) else {
+            return;
+        };
+        let data = app.global::<ProcsData>();
+        // `set_enabled` vuelve a mirar si hace falta ser administrador.
+        match win::startup::set_enabled(&item, on) {
+            Ok(()) => {
+                data.set_start_error("".into());
+                STATE.with_borrow_mut(|st| {
+                    if let Some(it) = st.starts.get_mut(i) {
+                        it.enabled = on;
+                    }
+                    set_starts_summary(&app, &st.starts);
+                });
+            }
+            Err(_) => {
+                data.set_start_error(item.name.as_str().into());
+                self.load_starts();
+            }
+        }
+    }
+}
+
+/// Segunda línea de la tarjeta del Resumen: los que están activados.
+fn set_starts_summary(app: &AppWindow, items: &[Item]) {
+    let n = items.iter().filter(|it| it.enabled).count();
+    let text = if n == 1 { "1 programa arranca con Windows".to_string() } else { format!("{n} programas arrancan con Windows") };
+    summary::set_procs_text(app, &text);
 }

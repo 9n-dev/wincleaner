@@ -3,6 +3,7 @@
 pub mod icon;
 pub mod proc;
 pub mod reg;
+pub mod startup;
 pub mod trust;
 pub mod uninstall;
 

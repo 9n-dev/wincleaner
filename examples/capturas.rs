@@ -295,6 +295,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     modal.set_open(false);
+
+    // Arrancan con Windows, con los datos de `STARTS` de las maquetas.
+    use wincleaner::ui::StartRow;
+    let starts = [
+        (0xc4a7b4, "D", "Discord", "Registro del usuario", true, false, false),
+        (0xa9c2b8, "S", "Spotify", "Registro del usuario", true, false, false),
+        (0x8fb0c4, "O", "Microsoft OneDrive", "Registro del usuario", true, false, false),
+        (0x8fb0c4, "S", "Steam", "Registro del usuario", false, false, false),
+        (0xd6b38a, "u", "updater.exe", "Registro del usuario · %TEMP%\\x7f2 · sin firma", true, false, true),
+        (0xd68a8a, "A", "Adobe Acrobat Update", "Carpeta Inicio · todos los usuarios", true, true, false),
+        (0x9ba6ad, "N", "NVIDIA App", "Registro del equipo", true, true, false),
+    ]
+    .map(|(c, l, n, w, on, adm, f): (u32, _, _, _, _, _, _)| StartRow {
+        name: n.into(),
+        r#where: w.into(),
+        on,
+        needs_admin: adm,
+        review: f,
+        icon: Default::default(),
+        letter: l.into(),
+        tint: slint::Color::from_rgb_u8((c >> 16) as u8, (c >> 8) as u8, c as u8),
+    });
+    data.set_selected(-1);
+    data.set_denied(false);
+    data.set_starts(model(starts.to_vec()));
+    data.set_tab(1);
+    for (suffix, w, h) in [("", 1100, 720), ("-min", 880, 600)] {
+        guarda(&format!("wcv2-procesos-inicio{suffix}"), &headless::render(app.window(), w, h), w, h)?;
+    }
+    data.set_tab(0);
     app.set_section(0);
 
     // Todos los componentes, con el modal abierto encima.

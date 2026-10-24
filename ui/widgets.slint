@@ -151,8 +151,9 @@ export component Note inherits Rectangle {
 
     border-radius: 10px;
     border-width: 1px;
-    border-color: root.c.with-alpha(0.47);
-    background: Palette.s1.mix(root.c, 0.92);
+    // Neutra: el borde y el fondo de siempre, sin tinte.
+    border-color: root.kind == Tone.neutral ? Palette.line2 : root.c.with-alpha(0.47);
+    background: root.kind == Tone.neutral ? Palette.s1 : Palette.s1.mix(root.c, 0.92);
 
     HorizontalLayout {
         padding: 12px;
@@ -252,7 +253,11 @@ export component Switch inherits FocusScope {
     opacity: root.enabled ? 1 : 0.4;
     accessible-role: switch;
     accessible-checked: root.checked;
-    accessible-action-default => { root.toggle(); }
+    accessible-enabled: root.enabled;
+    // La acción de accesibilidad no mira `enabled`: se comprueba aquí.
+    accessible-action-default => {
+        if (root.enabled) { root.toggle(); }
+    }
     function toggle() {
         root.checked = !root.checked;
         root.toggled(root.checked);

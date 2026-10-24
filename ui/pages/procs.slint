@@ -1,7 +1,7 @@
 // Sección Procesos: «En ejecución» (agrupados por programa) y «Arrancan con Windows».
 // Todo llega por `ProcsData`.
 import { Palette, Type, Icon } from "../theme.slint";
-import { Button, ButtonKind, Note, Pill, Seg, AppIcon, EmptyState, Tone } from "../widgets.slint";
+import { Button, ButtonKind, Note, Pill, Seg, Switch, AppIcon, EmptyState, Tone } from "../widgets.slint";
 import { Head, ListBox } from "clean.slint";
 
 export struct ProcRow {
@@ -25,6 +25,22 @@ export struct ProcRow {
     review: bool,
 }
 
+export struct StartRow {
+    // El nombre del valor del registro o el del acceso directo.
+    name: string,
+    // «Registro del usuario», «Carpeta Inicio · todos los usuarios»…
+    where: string,
+    // El interruptor escribe aquí y avisa con `toggle`; Rust decide.
+    on: bool,
+    // Es del equipo y WinCleaner no es administrador: interruptor desactivado y pastilla.
+    needs-admin: bool,
+    // Merece un vistazo: pastilla «Revisar» y `where` en `warn`.
+    review: bool,
+    icon: image,
+    letter: string,
+    tint: color,
+}
+
 export global ProcsData {
     // «128 procesos · CPU 14 % · Memoria 5,4 GB de 16 GB»
     in property <string> subtitle;
@@ -40,6 +56,11 @@ export global ProcsData {
     callback terminate(int);
     callback open(int);
     callback dismiss();
+    // Arrancan con Windows.
+    in property <[StartRow]> starts;
+    callback toggle(int);
+    // Si no va vacío, el nombre del que no se pudo activar o desactivar.
+    in property <string> start-error;
     // Al entrar en la sección (true) y al salir (false): la lista solo se refresca mientras se ve.
     callback visible(bool);
 }
@@ -174,6 +195,69 @@ component ProcItem {
     }
 }
 
+component StartItem {
+    in property <StartRow> item;
+    in property <bool> compact;
+    in property <bool> first;
+    in-out property <bool> on;
+    callback toggled();
+    height: 61px;
+
+    // La primera no lleva raya: taparía el borde redondeado de la lista.
+    if !root.first: Rectangle {
+        y: 0;
+        height: 1px;
+        background: Palette.line;
+    }
+
+    Columns {
+        VerticalLayout {
+            alignment: center;
+            AppIcon {
+                img: root.item.icon;
+                letter: root.item.letter;
+                tint: root.item.tint;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            Text {
+                text: root.item.name;
+                color: Palette.tx;
+                font-weight: 500;
+                overflow: elide;
+            }
+            Text {
+                text: root.item.where;
+                color: root.item.review ? Palette.warn : Palette.fa;
+                font-size: Type.label;
+                overflow: elide;
+            }
+        }
+        if root.item.needs-admin || root.item.review: VerticalLayout {
+            alignment: center;
+            Pill {
+                kind: root.item.needs-admin ? Tone.neutral : Tone.warn;
+                icon: root.item.needs-admin ? "lock" : "warn";
+                // En estrecho, el candado solo.
+                text: !root.item.needs-admin ? "Revisar" : root.compact ? "" : "Necesita administrador";
+                accessible-role: text;
+                accessible-label: root.item.needs-admin ? "Necesita administrador" : "Revisar";
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            Switch {
+                checked <=> root.on;
+                enabled: !root.item.needs-admin;
+                accessible-label: root.item.name;
+                toggled => { root.toggled(); }
+            }
+        }
+    }
+}
+
 export component ProcsPage inherits Rectangle {
     in property <bool> compact;
     // «Reiniciar como admin.» del aviso (lo conecta la ventana con `Nav`).
@@ -207,6 +291,20 @@ export component ProcsPage inherits Rectangle {
                 accessible-label: "Reiniciar como administrador";
                 clicked => { root.relaunch-admin(); }
             }
+            Button {
+                text: "";
+                icon: "x";
+                accessible-label: "Cerrar aviso";
+                clicked => { ProcsData.dismiss(); }
+            }
+        }
+
+        if ProcsData.start-error != "": Note {
+            vertical-stretch: 0;
+            kind: Tone.bad;
+            icon: "warn";
+            title: "No se pudo cambiar «" + ProcsData.start-error + "».";
+
             Button {
                 text: "";
                 icon: "x";
@@ -284,12 +382,41 @@ export component ProcsPage inherits Rectangle {
             text: "";
         }
 
-        // La lista de arranque llega con su propia tarea.
-        if ProcsData.tab == 1: EmptyState {
+        // Neutra, como en las maquetas, con el icono de información.
+        if ProcsData.tab == 1: Note {
+            vertical-stretch: 0;
+            kind: Tone.neutral;
+            icon: "info";
+            text: "Desactivar no borra nada: es lo mismo que hace el Administrador de tareas y se puede volver a activar.";
+        }
+
+        if ProcsData.tab == 1 && ProcsData.starts.length > 0: ListBox {
+            preferred-height: ProcsData.starts.length * 61px;
+            min-height: 100px;
+
+            Flickable {
+                vertical-stretch: 1;
+                content-width: self.width;
+                content-height: starts.preferred-height;
+
+                starts := VerticalLayout {
+                    width: parent.width;
+                    for row[i] in ProcsData.starts: StartItem {
+                        item: row;
+                        on <=> row.on;
+                        first: i == 0;
+                        compact: root.compact;
+                        toggled => { ProcsData.toggle(i); }
+                    }
+                }
+            }
+        }
+
+        if ProcsData.tab == 1 && ProcsData.starts.length == 0: EmptyState {
             preferred-height: 100000px;
             min-height: 160px;
             icon: "pulse";
-            title: "Programas que arrancan con Windows";
+            title: "Ningún programa arranca con Windows";
             text: "";
         }
     }
