@@ -129,35 +129,51 @@ pub struct Scan {
     done: Option<(i32, String)>,
 }
 
-/// Lee `r` hasta el final en un hilo, guardando como mucho `OUTPUT_LIMIT` bytes.
-fn drain(r: impl Read + Send + 'static) -> JoinHandle<Vec<u8>> {
-    thread::spawn(move || {
-        let mut r = r;
-        let mut buf = Vec::new();
-        let _ = (&mut r).take(OUTPUT_LIMIT).read_to_end(&mut buf);
-        let _ = io::copy(&mut r, &mut io::sink());
-        buf
-    })
+/// Lee `r` hasta el final en un hilo, guardando como mucho `OUTPUT_LIMIT` bytes. `None` si el
+/// hilo no se puede crear.
+fn drain(r: impl Read + Send + 'static) -> Option<JoinHandle<Vec<u8>>> {
+    thread::Builder::new()
+        .spawn(move || {
+            let mut r = r;
+            let mut buf = Vec::new();
+            let _ = (&mut r).take(OUTPUT_LIMIT).read_to_end(&mut buf);
+            let _ = io::copy(&mut r, &mut io::sink());
+            buf
+        })
+        .ok()
 }
 
 fn quiet(exe: &Path) -> Command {
     let mut c = Command::new(exe);
-    c.creation_flags(CREATE_NO_WINDOW).stdin(Stdio::null());
+    c.creation_flags(CREATE_NO_WINDOW).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     c
 }
 
-/// Lanza un análisis sin ventana, con la salida capturada. `None` si no hay `MpCmdRun.exe` o no arranca.
+/// Lanza un análisis sin ventana, con la salida capturada. `None` si no hay `MpCmdRun.exe` o no
+/// arranca (si no se pueden crear los hilos que leen su salida, se termina).
 pub fn start(k: ScanKind) -> Option<Scan> {
     let exe = mpcmdrun()?;
     let mut child = quiet(&exe).args(defender::scan_args(k)).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().ok()?;
-    let mut out = Vec::new();
-    out.extend(child.stdout.take().map(drain));
-    out.extend(child.stderr.take().map(drain));
+    let out: Option<Vec<_>> = [child.stdout.take().and_then(drain), child.stderr.take().and_then(drain)].into_iter().collect();
+    let Some(out) = out else {
+        let _ = child.kill();
+        return None;
+    };
     Some(Scan { exe, child, out, done: None })
 }
 
 impl Scan {
-    /// Sin bloquear: `Some((código, salida))` cuando ha terminado (-1 si no se sabe el código).
+    fn running(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(None))
+    }
+
+    /// `MpCmdRun.exe -Cancel`, sin esperarlo; `None` si no arranca.
+    fn ask_cancel(&self) -> Option<Child> {
+        quiet(&self.exe).arg("-Cancel").spawn().ok()
+    }
+
+    /// Sin bloquear: `Some((código, salida))` cuando ha terminado y se ha leído toda su salida
+    /// (-1 si no se sabe el código).
     pub fn finished(&mut self) -> Option<(i32, String)> {
         if self.done.is_none() {
             let code = match self.child.try_wait() {
@@ -165,7 +181,9 @@ impl Scan {
                 Ok(Some(s)) => s.code().unwrap_or(-1),
                 Err(_) => -1,
             };
-            // Con el proceso terminado, sus tuberías se cierran y los hilos acaban enseguida.
+            if !self.out.iter().all(JoinHandle::is_finished) {
+                return None;
+            }
             let mut text = Vec::new();
             for h in std::mem::take(&mut self.out) {
                 text.extend(h.join().unwrap_or_default());
@@ -177,19 +195,33 @@ impl Scan {
 
     /// Pide a Defender que pare (`MpCmdRun.exe -Cancel`), espera hasta 5 s y, si el análisis
     /// sigue vivo, lo termina. Bloquea ese tiempo: llámalo fuera del hilo de la interfaz.
+    /// Si el análisis ya terminó, no hace nada (otro `-Cancel` pararía otro análisis de Defender).
     pub fn cancel(&mut self) {
-        let mut stop = quiet(&self.exe).arg("-Cancel").stdout(Stdio::null()).stderr(Stdio::null()).spawn().ok();
+        if !self.running() {
+            return;
+        }
+        let mut stop = self.ask_cancel();
         let until = Instant::now() + Duration::from_secs(5);
-        while Instant::now() < until && matches!(self.child.try_wait(), Ok(None)) {
+        while Instant::now() < until && self.running() {
             thread::sleep(Duration::from_millis(100));
         }
-        if matches!(self.child.try_wait(), Ok(None)) {
+        if self.running() {
             let _ = self.child.kill();
         }
         if let Some(s) = stop.as_mut()
             && matches!(s.try_wait(), Ok(None))
         {
             let _ = s.kill();
+        }
+    }
+}
+
+impl Drop for Scan {
+    /// Soltar un análisis en marcha lo para, sin esperar: un completo puede durar horas.
+    fn drop(&mut self) {
+        if self.running() {
+            let _ = self.ask_cancel();
+            let _ = self.child.kill();
         }
     }
 }

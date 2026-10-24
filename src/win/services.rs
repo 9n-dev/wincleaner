@@ -206,7 +206,9 @@ fn task(t: &Com<IRegisteredTask>, sys32: &str, out: &mut Vec<(String, String)>) 
     let Ok(actions) = (unsafe { Com::<IActionCollection>::out(|p| def.get_Actions(p)) }) else { return };
     let mut path = Bstr::null();
     // SAFETY: deja en `path` un BSTR nuestro (o nulo).
-    unsafe { t.get_Path(&mut path.0) };
+    if unsafe { t.get_Path(&mut path.0) } < 0 {
+        return;
+    }
     let mut n = 0;
     // SAFETY: solo escribe en `n`.
     unsafe { actions.get_Count(&mut n) };

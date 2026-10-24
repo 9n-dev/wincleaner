@@ -263,7 +263,8 @@ pub fn open_folder(dir: &Path) {
     unsafe { ShellExecuteW(null_mut(), verb.as_ptr(), file.as_ptr(), null(), null(), SW_SHOWNORMAL) };
 }
 
-/// Carpetas en las que un ejecutable da que pensar, para las comprobaciones de seguridad.
+/// Carpetas en las que un ejecutable da que pensar, para las comprobaciones de seguridad: las
+/// temporales son TEMP, TMP y `%SystemRoot%\Temp`.
 /// Las que no se pueden leer quedan vacías y no cuentan.
 #[expect(dead_code, reason = "lo usa la Task 14")]
 pub fn security_places() -> Places {
@@ -272,7 +273,9 @@ pub fn security_places() -> Places {
         .iter()
         .filter_map(std::env::var_os)
         .map(|t| long_path(Path::new(&t)).to_string_lossy().into_owned())
+        .chain(known_folder(&FOLDERID_Windows).map(|w| w.join("Temp").to_string_lossy().into_owned()))
         .collect();
+    temp.sort_by_key(|t| t.to_lowercase());
     temp.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
     Places {
         temp,

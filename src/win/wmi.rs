@@ -25,7 +25,8 @@ use winapi::um::oleauto::{
 use winapi::um::unknwnbase::IUnknown;
 use winapi::um::wbemcli::{
     IEnumWbemClassObject, IWbemClassObject, IWbemLocator, IWbemServices, WBEM_FLAG_FORWARD_ONLY,
-    WBEM_FLAG_RETURN_IMMEDIATELY, WBEM_S_TIMEDOUT, WbemLocator,
+    WBEM_E_TIMED_OUT, WBEM_FLAG_CONNECT_USE_MAX_WAIT, WBEM_FLAG_RETURN_IMMEDIATELY, WBEM_S_TIMEDOUT,
+    WbemLocator,
 };
 use winapi::{Class, Interface};
 
@@ -217,10 +218,12 @@ fn run(namespace: &str, wql: &str, fields: &[&str]) -> Result<Vec<Vec<Value>>, i
         })
     }?;
     let ns = Bstr::new(namespace);
+    // Con MAX_WAIT, la conexión se rinde a los 2 minutos en vez de esperar sin fin.
+    let connect = WBEM_FLAG_CONNECT_USE_MAX_WAIT as i32;
     // SAFETY: `ns` vive durante la llamada; sin usuario, contraseña ni contexto (el usuario actual).
     let svc = unsafe {
         Com::<IWbemServices>::out(|p| {
-            loc.ConnectServer(ns.0, null_mut(), null_mut(), null_mut(), 0, null_mut(), null_mut(), p)
+            loc.ConnectServer(ns.0, null_mut(), null_mut(), null_mut(), connect, null_mut(), null_mut(), p)
         })
     }?;
     let hr = blanket(svc.0.cast());
@@ -243,8 +246,12 @@ fn run(namespace: &str, wql: &str, fields: &[&str]) -> Result<Vec<Vec<Value>>, i
         // SAFETY: se pide un objeto; si llega (n == 1), `obj` es nuestro.
         let hr = unsafe { en.Next(NEXT_TIMEOUT_MS, 1, &mut obj, &mut n) };
         let obj = (!obj.is_null()).then(|| Com(obj));
-        if hr < 0 || hr == WBEM_S_TIMEDOUT as i32 {
+        if hr < 0 {
             return Err(hr);
+        }
+        // WMI no contesta: se da como error (negativo), igual que los demás.
+        if hr == WBEM_S_TIMEDOUT as i32 {
+            return Err(WBEM_E_TIMED_OUT as i32);
         }
         // WBEM_S_FALSE (1) sin objeto: no hay más.
         let Some(obj) = obj.filter(|_| n == 1) else { break };
