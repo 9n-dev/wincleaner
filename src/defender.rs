@@ -61,14 +61,19 @@ pub enum Availability {
 
 /// `status` es `None` si la consulta a Defender falló (y `Some(None)` si respondió sin datos);
 /// `others`, `None` si falló la del Centro de seguridad. Sin Defender activo, solo se dice que no
-/// hay antivirus si el Centro de seguridad ha respondido.
+/// hay antivirus si el Centro de seguridad ha respondido y no nombra a un Defender cuyo estado
+/// no se ha podido leer.
 pub fn availability(status: Option<Option<Status>>, others: Option<&[String]>) -> Availability {
     if let Some(s) = status.flatten().filter(|s| s.enabled) {
         return Availability::Defender(s);
     }
     let Some(others) = others else { return Availability::Unknown };
-    let v: Vec<String> = others.iter().filter(|n| !n.contains("Defender")).cloned().collect();
-    if v.is_empty() { Availability::NoAv } else { Availability::OtherAv(v) }
+    let (defender, v): (Vec<String>, Vec<String>) = others.iter().cloned().partition(|n| n.contains("Defender"));
+    match (v.is_empty(), status.is_none() && !defender.is_empty()) {
+        (false, _) => Availability::OtherAv(v),
+        (true, true) => Availability::Unknown,
+        (true, false) => Availability::NoAv,
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -173,6 +178,9 @@ mod tests {
         // Las consultas han respondido, vacías: de verdad no hay antivirus.
         assert_eq!(availability(Some(None), Some(&[])), Availability::NoAv);
         assert_eq!(availability(None, Some(&[])), Availability::NoAv);
+        // Falla la consulta a Defender y el Centro de seguridad solo lo nombra a él: no se sabe
+        // si está activo, así que no se dice «no hay antivirus».
+        assert_eq!(availability(None, Some(&v(&["Windows Defender"]))), Availability::Unknown);
     }
 
     #[test]
