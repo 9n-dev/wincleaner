@@ -261,7 +261,8 @@ pub fn search_url(file_name: &str) -> String {
 
 /// Ordena por nivel (amenazas primero) y junta en uno los hallazgos del mismo archivo (el de
 /// nivel más alto), con las acciones de todos en el orden de los botones. Como todas hablan del
-/// mismo archivo, de cada clase de acción queda la primera.
+/// mismo archivo, de cada clase de acción queda la primera. Una amenaza de Defender se queda solo
+/// con las suyas («Abrir Seguridad de Windows»): Defender ya la ha puesto en cuarentena.
 pub fn merge(mut v: Vec<Finding>) -> Vec<Finding> {
     fn rank(a: &Action) -> u8 {
         match a {
@@ -278,6 +279,7 @@ pub fn merge(mut v: Vec<Finding>) -> Vec<Finding> {
     for f in v {
         let same = out.iter_mut().find(|o| !f.path.is_empty() && o.path.eq_ignore_ascii_case(&f.path));
         match same {
+            Some(o) if o.level == Level::Threat => {}
             Some(o) => {
                 for a in f.actions {
                     if !o.actions.iter().any(|b| rank(b) == rank(&a)) {
@@ -317,6 +319,21 @@ pub fn summary(threats: usize, others: usize) -> (String, String) {
         }
     };
     (title, text)
+}
+
+/// Texto de «No se ha encontrado nada raro»: las `total` comprobaciones y las que no se pudieron
+/// hacer (`failed`, por su nombre).
+pub fn clean_text(defender_ok: bool, total: usize, failed: &[&str]) -> String {
+    let def = if defender_ok { "Defender no ha detectado amenazas" } else { "" };
+    match (failed, defender_ok) {
+        ([], true) => format!("{def} y las {total} comprobaciones están bien."),
+        ([], false) => format!("Las {total} comprobaciones de WinCleaner están bien."),
+        _ => {
+            let ok = total.saturating_sub(failed.len());
+            let s = format!("{ok} de {total} comprobaciones bien; no se pudo revisar: {}.", failed.join(", "));
+            if defender_ok { format!("{def}. {s}") } else { s }
+        }
+    }
 }
 
 /// Las únicas URL que WinCleaner abre: `https://…` y `windowsdefender:…`, sin comillas, espacios
@@ -482,6 +499,32 @@ mod tests {
             ]
         );
         assert_eq!(v[1].level, Level::Review);
+    }
+
+    #[test]
+    fn merge_keeps_threat_actions() {
+        let e = r"C:\Users\a\Downloads\x.exe";
+        let threat = Finding {
+            level: Level::Threat,
+            title: "Defender ha encontrado X".into(),
+            path: e.into(),
+            why: String::new(),
+            actions: vec![Action::OpenWindowsSecurity],
+        };
+        let v = merge(vec![process_finding(e, false, &places()).unwrap(), threat]);
+        assert_eq!(v.len(), 1);
+        assert_eq!((v[0].level, v[0].actions.clone()), (Level::Threat, vec![Action::OpenWindowsSecurity]));
+    }
+
+    #[test]
+    fn clean_text_counts_failures() {
+        assert_eq!(clean_text(true, 6, &[]), "Defender no ha detectado amenazas y las 6 comprobaciones están bien.");
+        assert_eq!(clean_text(false, 6, &[]), "Las 6 comprobaciones de WinCleaner están bien.");
+        assert_eq!(clean_text(false, 6, &["Archivo hosts"]), "5 de 6 comprobaciones bien; no se pudo revisar: Archivo hosts.");
+        assert_eq!(
+            clean_text(true, 6, &["A", "B"]),
+            "Defender no ha detectado amenazas. 4 de 6 comprobaciones bien; no se pudo revisar: A, B."
+        );
     }
 
     #[test]

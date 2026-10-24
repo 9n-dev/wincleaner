@@ -15,13 +15,12 @@ use slint::{Color, ComponentHandle, Image, Model, Rgba8Pixel, SharedPixelBuffer,
 use wincleaner::checks::Places;
 use wincleaner::format;
 use wincleaner::paths;
-use wincleaner::procs::{self, Group};
+use wincleaner::procs::{self, Group, TermError};
 use wincleaner::startup;
 use wincleaner::ui::{AppWindow, Confirm, ProcRow, ProcsData, StartRow, confirm};
 
 use super::{programs, security, summary};
 use crate::win;
-use crate::win::proc::TermError;
 use crate::win::startup::Item;
 use crate::win::trust::{self, Signature};
 
@@ -324,7 +323,7 @@ impl Procs {
             Err(e) => {
                 let text = match e {
                     TermError::Denied if !app.get_admin() => String::new(),
-                    e => kill_error(e),
+                    e => kill_error(e, &name),
                 };
                 data.set_denied_name(name.into());
                 data.set_error_text(text.into());
@@ -340,7 +339,7 @@ impl Procs {
         std::thread::spawn(move || {
             // Los accesos directos y SHGetFileInfoW (el icono de reserva) necesitan COM.
             let (items, icons, reviews): (Vec<Item>, Vec<Icon>, Vec<bool>) = win::with_com(|| {
-                let items = win::startup::list();
+                let items = win::startup::list().0;
                 let icons = items.iter().map(|it| it.exe.as_deref().and_then(|e| win::icon::load(e, 0))).collect();
                 let reviews =
                     items.iter().enumerate().map(|(i, it)| security::startup_check(i, it, &k.places).is_some()).collect();
@@ -448,10 +447,12 @@ pub(super) fn ask_kill(
     });
 }
 
-/// El texto de un error al terminar (el acceso denegado sin administrador lo explica cada sección).
-pub(super) fn kill_error(e: TermError) -> String {
+/// El texto de un error al terminar `name` (el acceso denegado sin administrador lo explica cada
+/// sección).
+pub(super) fn kill_error(e: TermError, name: &str) -> String {
     match e {
         TermError::Denied => "Windows ha denegado el acceso. Puede que sea un proceso protegido.".into(),
         TermError::Other(c) => format!("Windows devolvió el error {c}."),
+        TermError::Partial { closed, total } => procs::partial_text(name, closed, total),
     }
 }

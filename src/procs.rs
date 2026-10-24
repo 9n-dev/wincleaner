@@ -77,6 +77,39 @@ pub fn cpu_percent(prev: u64, now: u64, elapsed_100ns: u64, ncpu: u32) -> f32 {
     (now.saturating_sub(prev) as f64 / total * 100.0).min(100.0) as f32
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum TermError {
+    Denied,
+    Other(u32),
+    /// Se cerraron `closed` de `total` procesos; el resto es de otra sesión o se denegó.
+    Partial { closed: usize, total: usize },
+}
+
+/// Solo se terminan los procesos de la sesión de WinCleaner; si no se sabe alguna, no.
+pub fn same_session(pid_session: Option<u32>, own: Option<u32>) -> bool {
+    matches!((pid_session, own), (Some(a), Some(b)) if a == b)
+}
+
+/// Cómo acaba terminar un grupo de `total` procesos, de los que se cerraron (o ya no estaban)
+/// `closed`; `first` es el primer error. Si no se cerró ninguno y no hubo error (todos eran de
+/// otra sesión), también es `Partial`.
+pub fn kill_result(closed: usize, total: usize, first: Option<TermError>) -> Result<(), TermError> {
+    match first {
+        _ if closed >= total => Ok(()),
+        Some(e) if closed == 0 => Err(e),
+        _ => Err(TermError::Partial { closed, total }),
+    }
+}
+
+/// El aviso de `Partial`.
+pub fn partial_text(name: &str, closed: usize, total: usize) -> String {
+    if closed == 0 {
+        format!("Los procesos de {name} pertenecen a otro usuario o a Windows.")
+    } else {
+        format!("Se cerraron {closed} de {total} procesos de {name}; el resto pertenece a otro usuario o a Windows.")
+    }
+}
+
 /// Antes de terminar un PID se vuelve a mirar su ruta: si ya no existe, `Gone`;
 /// si no es la misma (PID reutilizado), `Mismatch`. Solo coincidencia exacta (ASCII sin mayúsculas) da `Kill`.
 pub fn kill_target(expected_exe: &str, current_exe: Option<&str>) -> KillTarget {
@@ -90,6 +123,26 @@ pub fn kill_target(expected_exe: &str, current_exe: Option<&str>) -> KillTarget 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kill_only_own_session() {
+        assert!(same_session(Some(1), Some(1)));
+        assert!(!same_session(Some(0), Some(1)));
+        assert!(!same_session(None, Some(1)) && !same_session(Some(1), None));
+    }
+
+    #[test]
+    fn kill_result_rules() {
+        assert_eq!(kill_result(2, 2, None), Ok(()));
+        assert_eq!(kill_result(0, 0, None), Ok(()));
+        assert_eq!(kill_result(0, 2, Some(TermError::Denied)), Err(TermError::Denied));
+        assert_eq!(kill_result(1, 3, Some(TermError::Denied)), Err(TermError::Partial { closed: 1, total: 3 }));
+        assert_eq!(kill_result(0, 2, None), Err(TermError::Partial { closed: 0, total: 2 }));
+        assert_eq!(
+            partial_text("Chrome", 3, 5),
+            "Se cerraron 3 de 5 procesos de Chrome; el resto pertenece a otro usuario o a Windows."
+        );
+    }
 
     fn p(pid: u32, name: &str, exe: Option<&str>, mem: u64) -> ProcInfo {
         ProcInfo { pid, name: name.into(), exe: exe.map(Into::into), mem, ..Default::default() }

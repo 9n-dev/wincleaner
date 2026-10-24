@@ -15,7 +15,11 @@ use winapi::um::winuser::{DestroyIcon, GetIconInfo, ICONINFO};
 
 /// Icono grande (32×32 a 96 ppp) de `path`, el número `index` (negativo: id de recurso).
 /// Si el archivo no tiene, el que le da el shell. Usa COM: el hilo lo tiene que iniciar.
+/// Solo rutas locales con letra: un icono en `\\host\…` conectaría con la red.
 pub fn load(path: &str, index: i32) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
+    if !wincleaner::cmdline::local_path(path) {
+        return None;
+    }
     let w = super::wide(path);
     let mut big: HICON = null_mut();
     // SAFETY: ruta UTF-16 terminada en nulo; pide un solo icono grande, que queda en `big`.

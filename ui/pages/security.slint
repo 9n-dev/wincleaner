@@ -8,7 +8,7 @@ export enum SecPhase { idle, scanning, clean, findings }
 
 export struct CheckRow {
     name: string,
-    // 0 pendiente, 1 en curso, 2 hecho.
+    // 0 pendiente, 1 en curso, 2 hecho, 3 no se pudo revisar.
     state: int,
 }
 
@@ -24,8 +24,10 @@ export struct FindingRow {
 
 export global SecurityData {
     in property <SecPhase> phase;
-    // 0 Defender, 1 otro antivirus, 2 ninguno; -1 mientras se comprueba.
+    // 0 Defender, 1 otro antivirus, 2 ninguno, 3 no se ha podido saber; -1 mientras se comprueba.
     in property <int> av: -1;
+    // Con `av` 3: está MpCmdRun, así que se puede analizar con Defender igualmente.
+    in property <bool> scan-anyway;
     // Con Defender, «Firmas de hace 2 días»; con otro antivirus, su nombre.
     in property <string> av-text;
     // Subtítulo durante el análisis y después: «Análisis rápido en curso · 2 min 5 s».
@@ -73,7 +75,8 @@ component CheckLine {
     in property <bool> live;
     property <bool> done: root.live && root.item.state == 2;
     accessible-role: text;
-    accessible-label: root.item.name + (!root.live ? "" : root.item.state == 2 ? ", hecho" : root.item.state == 1 ? ", en curso" : ", pendiente");
+    accessible-label: root.item.name + (!root.live ? "" : root.item.state == 2 ? ", hecho" : root.item.state == 1 ? ", en curso"
+        : root.item.state == 3 ? ", no se pudo revisar" : ", pendiente");
 
     HorizontalLayout {
         padding-top: 5px;
@@ -86,6 +89,10 @@ component CheckLine {
             if root.done: Icon {
                 name: "check";
                 color: Palette.ac;
+            }
+            if root.live && root.item.state == 3: Icon {
+                name: "warn";
+                color: Palette.warn;
             }
             if !root.live || root.item.state == 0: Icon {
                 name: "info";
@@ -128,7 +135,7 @@ component DefenderCard inherits Card {
             }
         }
         Text {
-            text: SecurityData.av == 0 ? SecurityData.av-text : "Comprobando Defender…";
+            text: SecurityData.av == 0 ? SecurityData.av-text : SecurityData.av == 3 ? "No se sabe si está activo" : "Comprobando Defender…";
             color: Palette.mu;
             vertical-alignment: center;
         }
@@ -142,13 +149,13 @@ component DefenderCard inherits Card {
             icon: "shield";
             kind: ButtonKind.primary;
             // Fuera de inicio la tarjeta está oculta: sus botones no hacen nada.
-            enabled: SecurityData.av == 0 && SecurityData.phase == SecPhase.idle;
+            enabled: (SecurityData.av == 0 || SecurityData.av == 3) && SecurityData.phase == SecPhase.idle;
             clicked => { SecurityData.quick(); }
         }
         Button {
             text: "Análisis completo";
             // Fuera de inicio la tarjeta está oculta: sus botones no hacen nada.
-            enabled: SecurityData.av == 0 && SecurityData.phase == SecPhase.idle;
+            enabled: (SecurityData.av == 0 || SecurityData.av == 3) && SecurityData.phase == SecPhase.idle;
             clicked => { SecurityData.full(); }
         }
     }
@@ -228,7 +235,8 @@ export component SecurityPage inherits Rectangle {
     property <SecPhase> phase: SecurityData.phase;
     property <bool> idle: root.phase == SecPhase.idle;
     property <bool> scanning: root.phase == SecPhase.scanning;
-    property <bool> defender: SecurityData.av <= 0;
+    property <bool> unknown: SecurityData.av == 3;
+    property <bool> defender: SecurityData.av <= 0 || (root.unknown && SecurityData.scan-anyway);
     // Inicio con Defender: su tarjeta y la de las comprobaciones, lado a lado (una encima de
     // otra si la ventana es estrecha).
     property <bool> two: root.idle && root.defender;
@@ -269,7 +277,14 @@ export component SecurityPage inherits Rectangle {
                 }
             }
 
-            if root.idle && !root.defender: Note {
+            if root.idle && root.unknown: Note {
+                kind: Tone.info;
+                title: "No se pudo saber qué antivirus tienes.";
+                text: SecurityData.scan-anyway
+                    ? "Puedes analizar con Microsoft Defender igualmente. Las comprobaciones de WinCleaner sí funcionan."
+                    : "Las comprobaciones de WinCleaner sí funcionan.";
+            }
+            if root.idle && (SecurityData.av == 1 || SecurityData.av == 2): Note {
                 kind: SecurityData.av == 1 ? Tone.warn : Tone.bad;
                 title: SecurityData.av == 1 ? "Microsoft Defender no está disponible."
                     : "Microsoft Defender no está disponible y no hay otro antivirus activo.";
@@ -342,7 +357,7 @@ export component SecurityPage inherits Rectangle {
                     title: root.two ? "ADEMÁS SE REVISA" : "COMPROBACIONES DE WINCLEANER";
                     live: root.scanning;
 
-                    if root.idle && !root.defender: HorizontalLayout {
+                    if root.idle && (!root.defender || root.unknown): HorizontalLayout {
                         padding-top: 4px;
                         alignment: start;
                         Button {
@@ -400,7 +415,7 @@ export component SecurityPage inherits Rectangle {
                 }
             }
 
-            if root.idle || root.phase == SecPhase.clean: Disclaimer { }
+            if !root.scanning: Disclaimer { }
         }
     }
 }

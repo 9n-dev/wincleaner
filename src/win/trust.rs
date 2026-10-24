@@ -231,8 +231,20 @@ fn catalog(w: &[u16]) -> Signature {
     catalog_inner(w).unwrap_or(Signature::Unknown)
 }
 
-/// `None`: algún paso falló antes de saber si está en un catálogo.
+/// `None`: algún paso falló antes de saber si está en un catálogo. Los catálogos antiguos solo
+/// tienen el hash SHA1: si con SHA256 no está en ninguno, se prueba con SHA1.
 fn catalog_inner(w: &[u16]) -> Option<Signature> {
+    for alg in ["SHA256", "SHA1"] {
+        if let Some(s) = in_catalog(w, alg)? {
+            return Some(s);
+        }
+    }
+    // No está en ningún catálogo: de verdad sin firma.
+    Some(Signature::Unsigned)
+}
+
+/// La firma del catálogo que tiene el hash `alg` del archivo; `Some(None)` si no está en ninguno.
+fn in_catalog(w: &[u16], alg: &str) -> Option<Option<Signature>> {
     // SAFETY: ruta terminada en nulo; solo lectura, compartida con todo.
     let file = Handle(unsafe {
         CreateFileW(
@@ -248,10 +260,10 @@ fn catalog_inner(w: &[u16]) -> Option<Signature> {
     if file.0 == INVALID_HANDLE_VALUE {
         return None;
     }
-    let sha256 = wide("SHA256");
+    let alg = wide(alg);
     let mut admin: HCatAdmin = null_mut();
     // SAFETY: subsistema y política nulos (los de por defecto); `admin` es nuestro.
-    if unsafe { CryptCATAdminAcquireContext2(&mut admin, null(), sha256.as_ptr(), null(), 0) } == 0 {
+    if unsafe { CryptCATAdminAcquireContext2(&mut admin, null(), alg.as_ptr(), null(), 0) } == 0 {
         return None;
     }
     let admin = CatAdmin(admin);
@@ -265,8 +277,7 @@ fn catalog_inner(w: &[u16]) -> Option<Signature> {
     // SAFETY: hash de `n` bytes; sin catálogo anterior.
     let info = unsafe { CryptCATAdminEnumCatalogFromHash(admin.0, hash.as_mut_ptr(), n as DWORD, 0, null_mut()) };
     if info.is_null() {
-        // No está en ningún catálogo: de verdad sin firma.
-        return Some(Signature::Unsigned);
+        return Some(None);
     }
     let info = CatInfo(&admin, info);
     let mut cat = CatalogFile { cb_struct: size_of::<CatalogFile>() as DWORD, file: [0; 260] };
@@ -294,7 +305,7 @@ fn catalog_inner(w: &[u16]) -> Option<Signature> {
     // SAFETY: la unión es un puntero (aquí a WINTRUST_CATALOG_INFO); `ci` vive durante `verify`.
     unsafe { *data.u.pFile_mut() = (&raw mut ci).cast() };
     let (r, signer) = verify(data);
-    Some(from_result(r, signer))
+    Some(Some(from_result(r, signer)))
 }
 
 static CACHE: Mutex<Option<HashMap<String, Signature>>> = Mutex::new(None);

@@ -100,7 +100,8 @@ pub fn may_run(hive: Hive, is_admin: bool) -> bool {
     !(hive == Hive::User && is_admin)
 }
 
-/// `"C:\a.exe",3` o `C:\a.ico` → (ruta, índice); sin índice, 0.
+/// `"C:\a.exe",3` o `C:\a.ico` → (ruta, índice); sin índice, 0. Solo rutas locales con letra
+/// (`cmdline::local_path`): leer el icono de `\\host\x.ico` conectaría con la red.
 pub fn icon_location(s: &str) -> Option<(String, i32)> {
     let s = s.trim();
     let (ruta, idx) = if let Some(r) = s.strip_prefix('"') {
@@ -113,7 +114,7 @@ pub fn icon_location(s: &str) -> Option<(String, i32)> {
         }
     };
     let ruta = ruta.trim();
-    if ruta.is_empty() {
+    if !crate::cmdline::local_path(ruta) {
         return None;
     }
     Some((ruta.to_string(), idx.and_then(|i| i.parse().ok()).unwrap_or(0)))
@@ -303,6 +304,9 @@ mod tests {
         assert_eq!(icon_location("\"C:\\a.exe\",3"), Some(("C:\\a.exe".into(), 3)));
         assert_eq!(icon_location("C:\\a.ico"), Some(("C:\\a.ico".into(), 0)));
         assert_eq!(icon_location(""), None);
+        for malo in ["\\\\host\\x.ico", "\"\\\\host@SSL\\s\\x.dll\",0", "\\\\?\\C:\\x.ico", "x.ico,1", "C:\\a\u{7}.ico"] {
+            assert_eq!(icon_location(malo), None, "{malo}");
+        }
     }
 
     #[test]

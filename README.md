@@ -5,7 +5,7 @@
 **Limpieza y puesta a punto de Windows, sin complicaciones.**
 
 ![Estado](https://img.shields.io/badge/estado-v2%20sin%20probar%20en%20Windows-orange)
-![Plataforma](https://img.shields.io/badge/plataforma-Windows%2010-0078D6?logo=windows&logoColor=white)
+![Plataforma](https://img.shields.io/badge/plataforma-Windows%2010%201809%2B%20%2F%2011-0078D6?logo=windows&logoColor=white)
 ![Licencia](https://img.shields.io/badge/licencia-MIT-green)
 
 </div>
@@ -14,7 +14,7 @@
 
 ## ✨ Qué es
 
-WinCleaner es una herramienta para dejar Windows limpio y ligero: muestra dónde se va el espacio del disco, libera el que ocupan los archivos temporales y las cachés, y te deja ver y ordenar lo que tienes instalado, en marcha y arrancando con Windows. Es un único `.exe` portable de unos 8,2 MB (8 200 192 B; el límite es 8 MiB), sin instalación, sin telemetría y con la interfaz en español. Funciona en Windows 10 1809 o posterior y en Windows 11.
+WinCleaner es una herramienta para dejar Windows limpio y ligero: muestra dónde se va el espacio del disco, libera el que ocupan los archivos temporales y las cachés, y te deja ver y ordenar lo que tienes instalado, en marcha y arrancando con Windows. Es un único `.exe` portable de unos 8,2 MB (8 218 624 B; el límite es 8 MiB), sin instalación, sin telemetría y con la interfaz en español. Funciona en Windows 10 1809 o posterior y en Windows 11.
 
 ![Resumen de WinCleaner](docs/wcv2-inicio.png)
 
@@ -28,9 +28,9 @@ La v2 tiene seis secciones en una barra lateral (con solo iconos por debajo de 1
 
 **Programas.** Lista de lo instalado, con icono, tamaño y fecha, con búsqueda y orden. «Desinstalar» pide confirmación y ejecuta el desinstalador del propio programa; WinCleaner espera a que termine y refresca la lista.
 
-**Procesos.** Procesos agrupados con CPU y memoria, y la lista de programas de arranque (carpetas de inicio, claves `Run`), que se pueden activar o desactivar sin borrar nada. Se puede terminar un proceso con confirmación, y buscar su nombre en internet.
+**Procesos.** Procesos agrupados con CPU y memoria, y la lista de programas de arranque (carpetas de inicio, claves `Run`), que se pueden activar o desactivar sin borrar nada. Se puede terminar un proceso con confirmación.
 
-**Seguridad.** Estado de Microsoft Defender (activo, edad de las firmas), análisis rápido o completo que se puede cancelar, detecciones recientes y comprobaciones propias de solo lectura: programas de arranque, procesos y servicios en sitios raros o sin firma, procesos de sistema falsos, archivo `hosts` y proxy.
+**Seguridad.** Estado de Microsoft Defender (activo, edad de las firmas), análisis rápido o completo que se puede cancelar, detecciones recientes y comprobaciones propias de solo lectura: programas de arranque, procesos, servicios y tareas programadas de inicio en sitios raros o sin firma, procesos de sistema falsos, archivo `hosts` y proxy. Cada hallazgo explica por qué importa y, según el caso, permite desactivar el inicio, terminar el proceso, abrir su ubicación o buscar su nombre en internet. Si una comprobación no se ha podido hacer, se dice.
 
 **Analizar.** Elige una unidad y WinCleaner lista las 50 carpetas y los 50 archivos más grandes, con un botón para abrir su ubicación en el Explorador. Se puede detener. Las carpetas se muestran sin repetir la cadena de antecesoras, para que se vea dónde se concentra el espacio.
 
@@ -58,7 +58,7 @@ Solo se borra el contenido de esas carpetas, nunca la carpeta raíz. Las cookies
 - **Archivos en uso.** Los bloqueados o sin permiso se saltan sin errores y se cuentan en el informe.
 - **Confirmación.** Borrar, terminar un proceso y desinstalar pasan siempre por un modal que lista lo que va a pasar. El foco empieza en «Cancelar» y Intro y Esc siempre cancelan: solo se confirma con un clic o con Espacio sobre el botón de confirmar. Mientras se limpia, la ventana no se puede cerrar ni se cambia de sección.
 - **Desinstalar.** Solo se lanza el desinstalador `.exe` del propio programa (o `msiexec /x {GUID}` con un GUID válido), siempre por ruta absoluta. Nunca se ejecuta otra cosa ni se pasa por el `PATH`.
-- **Procesos.** No se pueden terminar los procesos críticos ni los que están en la carpeta de Windows, ni WinCleaner. Antes de terminar uno se vuelve a comprobar que el PID sigue siendo el mismo programa.
+- **Procesos.** No se pueden terminar los procesos críticos ni los que están en la carpeta de Windows, ni WinCleaner, ni los de otro usuario (solo los de tu sesión). Antes de terminar uno se vuelve a comprobar que el PID sigue siendo el mismo programa.
 - **Arranque.** Activar o desactivar un programa de inicio es reversible: solo cambia su valor en `StartupApproved`, igual que el Administrador de tareas, y no borra nada.
 - **Comprobaciones de seguridad.** Solo leen. WinCleaner **no es un antivirus**: usa Microsoft Defender y avisa de cosas raras, nada más. No se conecta a la red: las firmas se comprueban sin consultar servidores, y «Buscar en internet» abre tu navegador solo con el nombre del archivo, nunca con la ruta.
 - **Informe.** Al terminar, lo liberado por categoría y los archivos saltados.

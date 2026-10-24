@@ -12,7 +12,7 @@ use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, Vec
 use wincleaner::checks::{self, Action, Finding, Level, Places};
 use wincleaner::defender::{self, Availability, Detection, ScanExit, ScanKind};
 use wincleaner::format;
-use wincleaner::procs::Group;
+use wincleaner::procs::{Group, TermError};
 use wincleaner::programs::Hive;
 use wincleaner::startup;
 use wincleaner::ui::{AppWindow, CheckRow, FindingRow, Nav, SecPhase, SecurityData};
@@ -20,7 +20,6 @@ use wincleaner::ui::{AppWindow, CheckRow, FindingRow, Nav, SecPhase, SecurityDat
 use super::{procs, summary};
 use crate::win;
 use crate::win::defender::Scan;
-use crate::win::proc::TermError;
 use crate::win::startup::Item;
 use crate::win::trust::{self, Signature};
 
@@ -44,6 +43,8 @@ struct Own {
     starts: Vec<Item>,
     /// Los procesos de ese momento, para el texto de «¿Terminar…?».
     groups: Vec<Group>,
+    /// Las comprobaciones que no se han podido hacer, por su nombre.
+    failed: Vec<&'static str>,
 }
 
 /// Lo que deja el análisis de Defender.
@@ -91,32 +92,47 @@ thread_local! {
 /// Solo los activados, y la firma solo cuenta si se ha podido comprobar (R16).
 pub(super) fn startup_check(i: usize, it: &Item, p: &Places) -> Option<Finding> {
     let exe = it.exe.as_deref().filter(|_| it.enabled)?;
-    // Solo «no existe» de verdad: si no se puede mirar (acceso…), no hay hallazgo.
+    // Solo «no existe» de verdad: si no se puede mirar (acceso…), no hay hallazgo; y si el `Run`
+    // traía un nombre suelto o sin `.exe`, Windows lo encuentra por otro lado.
     let exists = !matches!(std::fs::metadata(exe), Err(e) if e.kind() == std::io::ErrorKind::NotFound);
+    if !exists && !it.sure {
+        return None;
+    }
     let signed = if exists { trust::check_cached(exe).verified()? } else { true };
     checks::startup_finding(i, &it.name, Some(exe), exists, signed, p)
 }
 
-/// Pastilla «Revisar» de un proceso: solo con la firma comprobada (R16).
+/// Pastilla «Revisar» de un proceso: lo que no depende de la firma (copia falsa de un proceso de
+/// Windows) siempre; lo demás, solo con la firma comprobada (R16).
 pub(super) fn process_review(exe: &str, sig: &Signature, p: &Places) -> bool {
-    sig.verified().is_some_and(|signed| {
-        checks::process_finding(exe, signed, p).is_some() || checks::fake_system_process(exe, &p.system_root).is_some()
-    })
+    checks::fake_system_process(exe, &p.system_root).is_some()
+        || sig.verified().is_some_and(|signed| checks::process_finding(exe, signed, p).is_some())
 }
 
-/// Las seis comprobaciones, en orden; `mark(i, estado)` va marcando su fila. Con COM.
+/// Las seis comprobaciones, en orden; `mark(i, estado)` va marcando su fila (3: no se pudo
+/// revisar). Con COM.
 fn own_checks(mark: &dyn Fn(usize, i32)) -> Own {
     let p = win::security_places();
     let mut v = Vec::new();
+    let mut failed = Vec::new();
+    let mut end = |i: usize, ok: bool| {
+        mark(i, if ok { 2 } else { 3 });
+        if !ok {
+            failed.push(CHECKS[i]);
+        }
+    };
 
     mark(0, 1);
-    let starts = win::startup::list();
+    let (starts, ok) = win::startup::list();
     v.extend(starts.iter().enumerate().filter_map(|(i, it)| startup_check(i, it, &p)));
-    mark(0, 2);
+    end(0, ok);
 
     mark(1, 1);
     let me = win::proc::own_pid();
-    let groups = wincleaner::procs::group(win::proc::snapshot(), &p.system_root);
+    let snap = win::proc::snapshot();
+    // Siempre está WinCleaner: vacía es que no se ha podido leer.
+    let procs_ok = !snap.is_empty();
+    let groups = wincleaner::procs::group(snap, &p.system_root);
     // WinCleaner no se señala a sí mismo (portable y sin firma, puede estar en Descargas).
     let exes: Vec<&str> = groups
         .iter()
@@ -129,23 +145,31 @@ fn own_checks(mark: &dyn Fn(usize, i32)) -> Own {
             v.extend(checks::process_finding(exe, signed, &p));
         }
     }
-    mark(1, 2);
+    end(1, procs_ok);
 
     mark(2, 1);
-    for (name, exe) in win::services::services().into_iter().chain(win::services::boot_tasks()) {
+    let (services, tasks) = (win::services::services(), win::services::boot_tasks());
+    let ok = services.is_some() && tasks.is_some();
+    for (name, exe) in services.into_iter().chain(tasks).flatten() {
         // Con firma (de quien sea) no hay hallazgo; si no se sabe, tampoco (R16).
         if trust::check_cached(&exe).verified() == Some(false) {
             v.extend(checks::service_finding(&name, &exe, None));
         }
     }
-    mark(2, 2);
+    end(2, ok);
 
     mark(3, 1);
-    let hosts = win::system32().and_then(|s| std::fs::read(Path::new(&s).join(r"drivers\etc\hosts")).ok());
-    if let Some(b) = hosts {
-        v.extend(checks::hosts_finding(&checks::hosts_entries(&String::from_utf8_lossy(&b))));
-    }
-    mark(3, 2);
+    // Sin archivo hosts no hay entradas añadidas; si no se puede leer, no se sabe.
+    let hosts = win::system32().map(|s| std::fs::read(Path::new(&s).join(r"drivers\etc\hosts")));
+    let ok = match hosts {
+        Some(Ok(b)) => {
+            v.extend(checks::hosts_finding(&checks::hosts_entries(&String::from_utf8_lossy(&b))));
+            true
+        }
+        Some(Err(e)) => e.kind() == std::io::ErrorKind::NotFound,
+        None => false,
+    };
+    end(3, ok);
 
     mark(4, 1);
     v.extend(checks::proxy_finding(
@@ -153,20 +177,20 @@ fn own_checks(mark: &dyn Fn(usize, i32)) -> Own {
         win::reg::read_str(Hive::User, INTERNET, "ProxyServer").as_deref(),
         win::reg::read_str(Hive::User, INTERNET, "AutoConfigURL").as_deref(),
     ));
-    mark(4, 2);
+    end(4, true);
 
     mark(5, 1);
     for exe in &exes {
         v.extend(checks::fake_system_process(exe, &p.system_root));
     }
-    mark(5, 2);
+    end(5, procs_ok);
 
     // «Terminar proceso» solo si sigue en marcha y no es de Windows.
     let killable = |exe: &str| groups.iter().any(|g| !g.blocked && g.key == exe.to_ascii_lowercase());
     for f in &mut v {
         f.actions.retain(|a| !matches!(a, Action::Kill(e) if !killable(e)));
     }
-    Own { findings: v, starts, groups }
+    Own { findings: v, starts, groups, failed }
 }
 
 fn threat(name: &str, path: String) -> Finding {
@@ -246,8 +270,13 @@ impl Security {
         // WMI puede tardar: el estado del antivirus se lee en un hilo.
         let c = k.clone();
         std::thread::spawn(move || {
-            let a = defender::availability(win::defender::status(), &win::defender::other_avs());
-            let _ = c.app.clone().upgrade_in_event_loop(move |app| c.set_av(&app, a));
+            let a = defender::availability(win::defender::status(), win::defender::other_avs().as_deref());
+            // Sin saber qué antivirus hay, se puede analizar igual si está MpCmdRun.
+            let scan = a == Availability::Unknown && win::defender::mpcmdrun().is_some();
+            let _ = c.app.clone().upgrade_in_event_loop(move |app| {
+                app.global::<SecurityData>().set_scan_anyway(scan);
+                c.set_av(&app, a);
+            });
         });
         k
     }
@@ -278,6 +307,7 @@ impl Security {
                 (1, names, line)
             }
             Availability::NoAv => (2, String::new(), "No hay ningún antivirus activo".to_string()),
+            Availability::Unknown => (3, String::new(), "No se pudo saber qué antivirus tienes".to_string()),
         };
         let data = app.global::<SecurityData>();
         data.set_av(av);
@@ -294,7 +324,7 @@ impl Security {
         if av < 0 {
             return; // aún no se sabe si hay Defender
         }
-        let kind = kind.filter(|_| av == 0);
+        let kind = kind.filter(|_| av == 0 || (av == 3 && data.get_scan_anyway()));
         let started = STATE.with_borrow_mut(|st| {
             if st.busy {
                 return None;
@@ -395,7 +425,7 @@ impl Security {
 
     /// Cuando han vuelto Defender y las comprobaciones: junta, ordena y enseña los hallazgos.
     fn finish(&self, app: &AppWindow) {
-        let Some((def, n, threats, bad, kind)) = STATE.with_borrow_mut(|st| {
+        let Some((def, n, threats, bad, kind, failed)) = STATE.with_borrow_mut(|st| {
             if st.def.is_none() || st.own.is_none() {
                 return None;
             }
@@ -404,13 +434,14 @@ impl Security {
             st.busy = false;
             let mut all = std::mem::take(&mut def.threats);
             all.extend(own.findings);
+            let failed = own.failed;
             st.findings = checks::merge(all);
             st.starts = own.starts;
             st.groups = own.groups;
             st.rows.set_vec(st.findings.iter().map(row).collect::<Vec<_>>());
             let threats = st.findings.iter().filter(|f| f.level == Level::Threat).count();
             let bad = st.findings.iter().any(|f| f.level != Level::Review);
-            Some((def, st.findings.len(), threats, bad, st.kind))
+            Some((def, st.findings.len(), threats, bad, st.kind, failed))
         }) else {
             return;
         };
@@ -427,6 +458,9 @@ impl Security {
             if let Some(p) = &def.problem {
                 text = format!("{text} {p}");
             }
+            if !failed.is_empty() {
+                text = format!("{text} No se pudo revisar: {}.", failed.join(", "));
+            }
             data.set_banner_title(title.into());
             data.set_banner_text(text.into());
             data.set_banner_bad(bad);
@@ -438,14 +472,7 @@ impl Security {
             data.set_banner_bad(false);
             SecPhase::Clean
         };
-        data.set_clean_text(
-            if defender_ok {
-                "Defender no ha detectado amenazas y las 6 comprobaciones están bien."
-            } else {
-                "Las 6 comprobaciones de WinCleaner están bien."
-            }
-            .into(),
-        );
+        data.set_clean_text(checks::clean_text(defender_ok, CHECKS.len(), &failed).into());
         data.set_needs_admin(def.needs_admin);
         data.set_defender_running(false);
         data.set_header(header.as_str().into());
@@ -453,6 +480,7 @@ impl Security {
         app.global::<Nav>().set_security_badge(n as i32);
         let title = match n {
             0 if kind.is_some() && !defender_ok => "Defender no ha podido analizar".to_string(),
+            0 if !failed.is_empty() => format!("{} de {} comprobaciones bien", CHECKS.len() - failed.len(), CHECKS.len()),
             0 => "Todo bien".to_string(),
             1 => "1 cosa que revisar".to_string(),
             n => format!("{n} cosas que revisar"),
@@ -539,7 +567,7 @@ impl Security {
                             TermError::Denied if !app.get_admin() => {
                                 "Windows ha denegado el acceso. Reinicia WinCleaner como administrador para intentarlo.".into()
                             }
-                            e => procs::kill_error(e),
+                            e => procs::kill_error(e, &shown),
                         };
                         k.failed(app, &format!("No se pudo terminar «{shown}»."), &text);
                     }

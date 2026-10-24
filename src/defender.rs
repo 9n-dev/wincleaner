@@ -55,12 +55,18 @@ pub enum Availability {
     Defender(Status),
     OtherAv(Vec<String>),
     NoAv,
+    /// No se ha podido saber: no se dice «no hay antivirus».
+    Unknown,
 }
 
-pub fn availability(status: Option<Status>, others: &[String]) -> Availability {
-    if let Some(s) = status.filter(|s| s.enabled) {
+/// `status` es `None` si la consulta a Defender falló (y `Some(None)` si respondió sin datos);
+/// `others`, `None` si falló la del Centro de seguridad. Sin Defender activo, solo se dice que no
+/// hay antivirus si el Centro de seguridad ha respondido.
+pub fn availability(status: Option<Option<Status>>, others: Option<&[String]>) -> Availability {
+    if let Some(s) = status.flatten().filter(|s| s.enabled) {
         return Availability::Defender(s);
     }
+    let Some(others) = others else { return Availability::Unknown };
     let v: Vec<String> = others.iter().filter(|n| !n.contains("Defender")).cloned().collect();
     if v.is_empty() { Availability::NoAv } else { Availability::OtherAv(v) }
 }
@@ -151,17 +157,22 @@ mod tests {
     fn availability_defender_off_names_other() {
         let off = Status { enabled: false, signature_age_days: None };
         assert_eq!(
-            availability(Some(off), &v(&["Windows Defender", "Avast Free Antivirus"])),
+            availability(Some(Some(off)), Some(&v(&["Windows Defender", "Avast Free Antivirus"]))),
             Availability::OtherAv(v(&["Avast Free Antivirus"]))
         );
         let on = Status { enabled: true, signature_age_days: Some(1) };
-        assert_eq!(availability(Some(on), &[]), Availability::Defender(on));
-        assert_eq!(availability(Some(off), &v(&["Windows Defender"])), Availability::NoAv);
+        assert_eq!(availability(Some(Some(on)), None), Availability::Defender(on));
+        assert_eq!(availability(Some(Some(off)), Some(&v(&["Windows Defender"]))), Availability::NoAv);
     }
 
     #[test]
-    fn availability_wmi_denied_no_av() {
-        assert_eq!(availability(None, &[]), Availability::NoAv);
+    fn availability_wmi_failed_is_unknown() {
+        assert_eq!(availability(None, None), Availability::Unknown);
+        let off = Status { enabled: false, signature_age_days: None };
+        assert_eq!(availability(Some(Some(off)), None), Availability::Unknown);
+        // Las consultas han respondido, vacías: de verdad no hay antivirus.
+        assert_eq!(availability(Some(None), Some(&[])), Availability::NoAv);
+        assert_eq!(availability(None, Some(&[])), Availability::NoAv);
     }
 
     #[test]

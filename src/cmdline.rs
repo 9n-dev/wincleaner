@@ -28,14 +28,10 @@ pub fn split_exe(cmd: &str) -> Option<(String, String)> {
 /// Todo lo demás (relativas con carpeta, `C:x`, UNC, `\\?\`, `\x`) da `None`, para que nada
 /// se resuelva por `PATH` ni por la carpeta actual. La existencia la comprueba la capa Win32.
 pub fn resolve(exe: &str, system32: &str) -> Option<String> {
-    let abs = |x: &str| {
-        let b = x.as_bytes();
-        b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/')
-    };
-    if !abs(system32) || exe.chars().any(char::is_control) {
+    if !local_path(system32) || exe.chars().any(char::is_control) {
         return None;
     }
-    if abs(exe) {
+    if local_path(exe) {
         return Some(exe.to_string());
     }
     let suelto = !exe.is_empty()
@@ -43,6 +39,17 @@ pub fn resolve(exe: &str, system32: &str) -> Option<String> {
         && exe != ".."
         && !exe.contains(['\\', '/', ':']);
     suelto.then(|| format!("{}\\{exe}", system32.trim_end_matches('\\')))
+}
+
+/// Ruta absoluta con letra de unidad (`X:\…` o `X:/…`) y sin caracteres de control. Nunca es de
+/// red (`\\host\…`, `\\host@SSL\…`), `\\?\` ni relativa: abrirla no conecta con nada.
+pub fn local_path(p: &str) -> bool {
+    let b = p.as_bytes();
+    b.len() >= 3
+        && b[0].is_ascii_alphabetic()
+        && b[1] == b':'
+        && (b[2] == b'\\' || b[2] == b'/')
+        && !p.chars().any(char::is_control)
 }
 
 /// Ejecutable de la `ImagePath` de un servicio, ya con las variables expandidas: quita `\??\`,
@@ -97,6 +104,14 @@ mod tests {
         assert_eq!(resolve("x.exe", "\\\\srv\\s"), None);
         for malo in ["sub\\x.exe", "\\\\srv\\x.exe", "\\\\?\\C:\\x.exe", "C:x.exe", "\\x.exe", "..", "", "a/b.exe", "C:\\a\u{7}.exe"] {
             assert_eq!(resolve(malo, s), None, "{malo}");
+        }
+    }
+
+    #[test]
+    fn local_path_rules() {
+        assert!(local_path("C:\\a\\x.ico") && local_path("d:/x.exe"));
+        for malo in ["\\\\host\\x.ico", "\\\\host@SSL\\s\\x.ico", "\\\\?\\C:\\x.ico", "//host/x", "C:x", "x.ico", "", "C:\\a\u{1}.ico"] {
+            assert!(!local_path(malo), "{malo}");
         }
     }
 

@@ -23,33 +23,38 @@ const DEFENDER_NS: &str = r"root\Microsoft\Windows\Defender";
 /// no se quede bloqueado escribiendo.
 const OUTPUT_LIMIT: u64 = 256 * 1024;
 
-/// Estado de Defender, o `None` si WMI no lo da (desactivado del todo, otro antivirus, Server…).
-pub fn status() -> Option<Status> {
+/// Estado de Defender: `None` si la consulta de WMI falla (desactivado del todo, Server, acceso
+/// denegado…) y `Some(None)` si responde sin datos.
+pub fn status() -> Option<Option<Status>> {
     let rows = wmi::query(
         DEFENDER_NS,
         "SELECT AntivirusEnabled, AntivirusSignatureAge FROM MSFT_MpComputerStatus",
         &["AntivirusEnabled", "AntivirusSignatureAge"],
     )
     .ok()?;
-    let row = rows.first()?;
-    let Value::Bool(enabled) = row[0] else { return None };
-    let signature_age_days = match row[1] {
-        Value::Int(d) => u32::try_from(d).ok(),
-        _ => None,
-    };
-    Some(Status { enabled, signature_age_days })
+    Some(rows.first().and_then(|row| {
+        let Value::Bool(enabled) = row[0] else { return None };
+        let signature_age_days = match row[1] {
+            Value::Int(d) => u32::try_from(d).ok(),
+            _ => None,
+        };
+        Some(Status { enabled, signature_age_days })
+    }))
 }
 
-/// Nombres de los antivirus que conoce el Centro de seguridad (Defender incluido).
-pub fn other_avs() -> Vec<String> {
+/// Nombres de los antivirus que conoce el Centro de seguridad (Defender incluido); `None` si la
+/// consulta falla.
+pub fn other_avs() -> Option<Vec<String>> {
     let rows = wmi::query(r"root\SecurityCenter2", "SELECT displayName FROM AntiVirusProduct", &["displayName"]);
-    rows.unwrap_or_default()
-        .into_iter()
-        .filter_map(|r| match r.into_iter().next() {
-            Some(Value::Str(s)) if !s.is_empty() => Some(s),
-            _ => None,
-        })
-        .collect()
+    Some(
+        rows.ok()?
+            .into_iter()
+            .filter_map(|r| match r.into_iter().next() {
+                Some(Value::Str(s)) if !s.is_empty() => Some(s),
+                _ => None,
+            })
+            .collect(),
+    )
 }
 
 /// `ThreatID` es `sint64`, que WMI da como texto; por si acaso, también se acepta un número.

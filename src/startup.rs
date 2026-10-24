@@ -43,6 +43,13 @@ pub fn encode(enabled: bool, now_filetime: u64) -> [u8; 12] {
     v
 }
 
+/// El ejecutable de un valor `Run`, tal como venía, permite decir «su archivo ya no existe» si no
+/// está: solo con carpeta y con `.exe`. Un nombre suelto Windows lo busca también por `PATH`, y
+/// sin extensión le añade `.exe`.
+pub fn missing_is_sure(raw_exe: &str) -> bool {
+    raw_exe.contains(['\\', '/']) && raw_exe.to_ascii_lowercase().ends_with(".exe")
+}
+
 pub fn where_text(s: Source) -> &'static str {
     match s {
         Source::RunUser => "Registro del usuario",
@@ -55,6 +62,14 @@ pub fn where_text(s: Source) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_only_with_full_path() {
+        assert!(missing_is_sure(r"C:\P\a.EXE"));
+        for no in ["a.exe", r"C:\P\a", "a", r"C:\P\a.exe.bak"] {
+            assert!(!missing_is_sure(no), "{no}");
+        }
+    }
 
     #[test]
     fn approved_missing_or_short_is_enabled() {

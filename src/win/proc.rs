@@ -7,7 +7,9 @@ use std::ptr::null_mut;
 use winapi::shared::minwindef::{BOOL, DWORD, FALSE, FILETIME, LPVOID, UINT};
 use winapi::shared::winerror::{ERROR_ACCESS_DENIED, ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_PARAMETER, WAIT_TIMEOUT};
 use winapi::um::handleapi::INVALID_HANDLE_VALUE;
-use winapi::um::processthreadsapi::{GetCurrentProcessId, GetProcessTimes, GetSystemTimes, OpenProcess, TerminateProcess};
+use winapi::um::processthreadsapi::{
+    GetCurrentProcessId, GetProcessTimes, GetSystemTimes, OpenProcess, ProcessIdToSessionId, TerminateProcess,
+};
 use winapi::um::psapi::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
 use winapi::um::synchapi::WaitForSingleObject;
 use winapi::um::sysinfoapi::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
@@ -15,7 +17,7 @@ use winapi::um::tlhelp32::{CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32F
 use winapi::um::winbase::QueryFullProcessImageNameW;
 use winapi::um::winnt::{HANDLE, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE, SYNCHRONIZE};
 use winapi::um::winver::{GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW};
-use wincleaner::procs::{self, KillTarget, ProcInfo};
+use wincleaner::procs::{self, KillTarget, ProcInfo, TermError};
 
 use super::{Handle, wide};
 
@@ -42,12 +44,6 @@ struct MemCountersEx2 {
     private_usage: usize,
     private_working_set_size: usize,
     shared_commit_usage: u64,
-}
-
-#[derive(Debug)]
-pub enum TermError {
-    Denied,
-    Other(u32),
 }
 
 fn last_error() -> u32 {
@@ -166,26 +162,43 @@ pub fn system() -> (u64, u64, u64, u64) {
     (total, idle, used, all)
 }
 
-/// Termina los `pids` que siguen siendo `expected_exe`. Cada uno se vuelve a mirar justo antes:
-/// si ya no existe o es otro programa (PID reutilizado), se salta. La ruta se lee otra vez con el
-/// mismo handle con el que se termina, para que entre medias no lo pueda ocupar otro. Sigue con los
-/// demás aunque uno falle y devuelve el primer error.
+/// Sesión de Windows del proceso `pid`, si se puede saber.
+fn session(pid: u32) -> Option<u32> {
+    let mut s = 0;
+    // SAFETY: solo escribe en `s`.
+    (unsafe { ProcessIdToSessionId(pid, &mut s) } != 0).then_some(s)
+}
+
+/// Termina los `pids` que siguen siendo `expected_exe` y son de la sesión de WinCleaner (los de
+/// otro usuario no se tocan, ni siquiera como administrador). Cada uno se vuelve a mirar justo
+/// antes: si ya no existe o es otro programa (PID reutilizado), cuenta como cerrado. La ruta se lee
+/// otra vez con el mismo handle con el que se termina, para que entre medias no lo pueda ocupar
+/// otro. Sigue con los demás aunque uno falle; el resultado, según `procs::kill_result`.
 pub fn terminate(pids: &[u32], expected_exe: &str) -> Result<(), TermError> {
-    let mut first = None;
+    let (mut first, mut closed, mut total) = (None, 0, 0);
     let me = own_pid();
+    let own = session(me);
     for &pid in pids {
         // WinCleaner no se termina a sí mismo.
         if pid == me {
             continue;
         }
+        total += 1;
         if procs::kill_target(expected_exe, exe_of(pid).as_deref()) != KillTarget::Kill {
+            closed += 1;
             continue;
         }
-        if let Err(e) = kill(pid, expected_exe) {
-            first.get_or_insert(e);
+        if !procs::same_session(session(pid), own) {
+            continue;
+        }
+        match kill(pid, expected_exe) {
+            Ok(()) => closed += 1,
+            Err(e) => {
+                first.get_or_insert(e);
+            }
         }
     }
-    first.map_or(Ok(()), Err)
+    procs::kill_result(closed, total, first)
 }
 
 fn kill(pid: u32, expected_exe: &str) -> Result<(), TermError> {

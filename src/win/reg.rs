@@ -193,9 +193,14 @@ pub fn subkeys(hive: Hive, path: &str) -> Vec<String> {
     out
 }
 
-/// Valores de texto (`REG_SZ`, `REG_EXPAND_SZ` expandido) como `(nombre, dato)`; los demás se saltan.
-pub fn values(hive: Hive, path: &str) -> Vec<(String, String)> {
-    let Ok(k) = Key::open(hive, path, KEY_READ) else { return Vec::new() };
+/// Valores de texto (`REG_SZ`, `REG_EXPAND_SZ` expandido) como `(nombre, dato)`; los demás se
+/// saltan. Si la clave no existe, vacío; si existe y no se puede abrir, `None`.
+pub fn values(hive: Hive, path: &str) -> Option<Vec<(String, String)>> {
+    let k = match Key::open(hive, path, KEY_READ) {
+        Ok(k) => k,
+        Err(ERROR_FILE_NOT_FOUND) => return Some(Vec::new()),
+        Err(_) => return None,
+    };
     // Un nombre de valor mide como mucho 16 383 caracteres.
     let mut buf = vec![0u16; 16_384];
     let mut out = Vec::new();
@@ -216,7 +221,7 @@ pub fn values(hive: Hive, path: &str) -> Vec<(String, String)> {
             _ => break,
         }
     }
-    out
+    Some(out)
 }
 
 /// Solo «no existe» cuenta como ausente: si no se puede abrir por otro motivo (permisos…),

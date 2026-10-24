@@ -1,6 +1,7 @@
 //! Lo que arranca solo sin estar en `Run` ni en Inicio: servicios automáticos y tareas
 //! programadas con disparador de arranque o de inicio de sesión. Solo se leen; lo que no se
-//! deja leer (acceso denegado…) se salta sin fallar la lista entera.
+//! deja leer (acceso denegado…) se salta sin fallar la lista entera. `None` si no se ha podido
+//! leer ni la lista.
 
 use std::ptr::{null, null_mut};
 
@@ -53,16 +54,16 @@ unsafe fn pwstr(p: *const u16) -> String {
 
 /// Servicios de inicio automático (también los retrasados): `(nombre visible, ejecutable)`.
 /// Se saltan los que corren dentro de `svchost.exe` y los de ruta que no se entiende.
-pub fn services() -> Vec<(String, String)> {
-    let (Some(root), Some(sys32)) = (windows_dir(), system32()) else { return Vec::new() };
+pub fn services() -> Option<Vec<(String, String)>> {
+    let (root, sys32) = (windows_dir()?, system32()?);
     // SAFETY: equipo local y base de datos por defecto.
     let scm = unsafe { OpenSCManagerW(null(), null(), SC_MANAGER_CONNECT | SC_MANAGER_ENUMERATE_SERVICE) };
     if scm.is_null() {
-        return Vec::new();
+        return None;
     }
     let scm = Sc(scm);
     let mut out = Vec::new();
-    for (name, display) in list(&scm) {
+    for (name, display) in list(&scm)? {
         let Some(image) = auto_start_image(&scm, &name) else { continue };
         let Some(exe) = cmdline::service_exe(&reg::expand_env(&image), &root, &sys32) else { continue };
         let file = exe.rsplit('\\').next().unwrap_or(&exe);
@@ -70,11 +71,12 @@ pub fn services() -> Vec<(String, String)> {
             out.push((if display.is_empty() { name } else { display }, exe));
         }
     }
-    out
+    Some(out)
 }
 
-/// `(nombre interno, nombre visible)` de todos los servicios Win32 (sin controladores).
-fn list(scm: &Sc) -> Vec<(String, String)> {
+/// `(nombre interno, nombre visible)` de todos los servicios Win32 (sin controladores); `None` si
+/// falla la primera llamada.
+fn list(scm: &Sc) -> Option<Vec<(String, String)>> {
     // 256 KiB es lo más que acepta una llamada; con más, se sigue con `resume`.
     let mut buf = vec![0u64; 256 * 1024 / 8];
     let bytes = (buf.len() * 8) as DWORD;
@@ -90,6 +92,9 @@ fn list(scm: &Sc) -> Vec<(String, String)> {
         };
         let more = ok == 0 && std::io::Error::last_os_error().raw_os_error() == Some(ERROR_MORE_DATA as i32);
         if ok == 0 && !more {
+            if resume == 0 && out.is_empty() {
+                return None;
+            }
             break;
         }
         // SAFETY: con éxito (o ERROR_MORE_DATA), el principio de `buf` son `n` entradas cuyas
@@ -103,7 +108,7 @@ fn list(scm: &Sc) -> Vec<(String, String)> {
             break;
         }
     }
-    out
+    Some(out)
 }
 
 /// `ImagePath` del servicio `name`, tal cual (sin expandir), si es de inicio automático;
@@ -139,8 +144,8 @@ fn auto_start_image(scm: &Sc, name: &str) -> Option<String> {
 
 /// Tareas programadas (también las ocultas) con disparador de arranque o de inicio de sesión:
 /// `(ruta de la tarea, ejecutable)` por cada acción que lanza un programa.
-pub fn boot_tasks() -> Vec<(String, String)> {
-    let Some(sys32) = system32() else { return Vec::new() };
+pub fn boot_tasks() -> Option<Vec<(String, String)>> {
+    let sys32 = system32()?;
     with_com(|| {
         let clsid = TaskScheduler::uuidof();
         // SAFETY: CLSID e IID válidos; si tiene éxito deja un ITaskService nuestro.
@@ -149,21 +154,19 @@ pub fn boot_tasks() -> Vec<(String, String)> {
                 CoCreateInstance(&clsid, null_mut(), CLSCTX_INPROC_SERVER, &ITaskService::uuidof(), p.cast())
             })
         }) else {
-            return Vec::new();
+            return None;
         };
         let e = Variant::empty();
         // SAFETY: cuatro VT_EMPTY: equipo local y usuario actual.
         if unsafe { svc.Connect(e.0, e.0, e.0, e.0) } < 0 {
-            return Vec::new();
+            return None;
         }
         let root = Bstr::new("\\");
         // SAFETY: `root` vive durante la llamada.
-        let Ok(folder) = (unsafe { Com::<ITaskFolder>::out(|p| svc.GetFolder(root.0, p)) }) else {
-            return Vec::new();
-        };
+        let folder = unsafe { Com::<ITaskFolder>::out(|p| svc.GetFolder(root.0, p)) }.ok()?;
         let mut out = Vec::new();
         walk(&folder, &sys32, &mut out);
-        out
+        Some(out)
     })
 }
 

@@ -37,26 +37,43 @@ pub struct Item {
     pub approved_name: String,
     /// Ruta absoluta del ejecutable (solo para enseñarlo: icono y firma), si se sabe.
     pub exe: Option<String>,
+    /// Si `exe` no está, se puede decir que «ya no existe» (`startup::missing_is_sure`).
+    pub sure: bool,
     pub enabled: bool,
 }
 
 /// Todo lo que arranca con Windows, en este orden: registro del usuario, del equipo (64 y 32
-/// bits) y carpetas Inicio (del usuario y de todos).
-pub fn list() -> Vec<Item> {
+/// bits) y carpetas Inicio (del usuario y de todos). El `bool` es `false` si algún origen no se
+/// ha podido leer (lo de los demás va igual).
+pub fn list() -> (Vec<Item>, bool) {
     let system32 = super::system32().unwrap_or_default();
     // Sin ruta absoluta con letra (UNC, relativa…), no se enseña ni se mira: nada de red.
     let abs = |e: &str| cmdline::resolve(e, &system32);
-    let mut out = Vec::new();
+    let (mut out, mut complete) = (Vec::new(), true);
     for (hive, source) in [(Hive::User, Source::RunUser), (Hive::Machine64, Source::RunMachine), (Hive::Machine32, Source::RunMachine32)] {
-        for (name, cmd) in reg::values(hive, RUN) {
-            let exe = cmdline::split_exe(&reg::expand_env(&cmd)).and_then(|(e, _)| abs(&e));
-            out.push(item(source, name.clone(), name, exe));
+        let Some(values) = reg::values(hive, RUN) else {
+            complete = false;
+            continue;
+        };
+        for (name, cmd) in values {
+            let raw = cmdline::split_exe(&reg::expand_env(&cmd)).map(|(e, _)| e);
+            let sure = raw.as_deref().is_some_and(startup::missing_is_sure);
+            out.push(item(source, name.clone(), name, raw.and_then(|e| abs(&e)), sure));
         }
     }
     super::with_com(|| {
         for (id, source) in [(&FOLDERID_Startup, Source::FolderUser), (&FOLDERID_CommonStartup, Source::FolderCommon)] {
-            let Some(dir) = known_folder(id) else { continue };
-            let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+            let Some(dir) = known_folder(id) else {
+                complete = false;
+                continue;
+            };
+            let rd = match std::fs::read_dir(&dir) {
+                Ok(rd) => rd,
+                Err(e) => {
+                    complete &= e.kind() == std::io::ErrorKind::NotFound;
+                    continue;
+                }
+            };
             let mut files: Vec<_> = rd.flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_file())).collect();
             files.sort_by_key(|e| e.file_name().to_string_lossy().to_lowercase());
             for f in files {
@@ -68,17 +85,17 @@ pub fn list() -> Vec<Item> {
                 let name = path.file_stem().map_or(file.clone(), |s| s.to_string_lossy().into_owned());
                 let is_lnk = path.extension().is_some_and(|x| x.eq_ignore_ascii_case("lnk"));
                 let target = if is_lnk { link_target(&path) } else { Some(path.to_string_lossy().into_owned()) };
-                out.push(item(source, name, file, target.and_then(|t| abs(&t))));
+                out.push(item(source, name, file, target.and_then(|t| abs(&t)), true));
             }
         }
     });
-    out
+    (out, complete)
 }
 
-fn item(source: Source, name: String, approved_name: String, exe: Option<String>) -> Item {
+fn item(source: Source, name: String, approved_name: String, exe: Option<String>, sure: bool) -> Item {
     let (hive, key) = startup::approved_key(source);
     let enabled = startup::is_enabled(reg::read_binary(hive, key, &approved_name).as_deref());
-    Item { source, name, approved_name, exe, enabled }
+    Item { source, name, approved_name, exe, sure, enabled }
 }
 
 /// Activa o desactiva `item`; el error es el código de Win32. Los del equipo necesitan

@@ -390,9 +390,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ("seguridad-limpio", SecPhase::Clean, 0, "Último análisis: hoy, 18:42 · rápido", 6, 0),
         ("seguridad-hallazgos", SecPhase::Findings, 0, "Último análisis: hoy, 18:42 · rápido", 6, 3),
         ("seguridad-sin-defender", SecPhase::Idle, 1, "", 0, 0),
+        // WMI no responde: aviso neutro y, con MpCmdRun, los análisis siguen.
+        ("seguridad-desconocido", SecPhase::Idle, 3, "", 0, 0),
     ] {
         data.set_phase(phase);
         data.set_av(av);
+        data.set_scan_anyway(av == 3);
         if av == 1 {
             data.set_av_text("Avast Free Antivirus".into());
         }
