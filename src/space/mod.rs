@@ -1,6 +1,8 @@
 pub mod zones;
 pub mod tree;
 pub mod recycle;
+pub mod parse;
+pub mod games;
 
 use tree::{Kind, Node};
 use zones::Block;

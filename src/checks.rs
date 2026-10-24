@@ -336,10 +336,18 @@ pub fn clean_text(defender_ok: bool, total: usize, failed: &[&str]) -> String {
     }
 }
 
+fn launcher_url(url: &str) -> bool {
+    url == "com.epicgames.launcher://"
+        || url == "ms-settings:appsfeatures"
+        || url
+            .strip_prefix("steam://uninstall/")
+            .is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
+}
+
 /// Las únicas URL que WinCleaner abre: `https://…` y `windowsdefender:…`, sin comillas, espacios
 /// ni caracteres de control (nada que ShellExecute pueda leer como otro argumento).
 pub fn openable_url(url: &str) -> bool {
-    (url.starts_with("https://") || url.starts_with("windowsdefender:"))
+    (url.starts_with("https://") || url.starts_with("windowsdefender:") || launcher_url(url))
         && !url.chars().any(|c| c == '"' || c.is_whitespace() || c.is_control())
 }
 
@@ -538,6 +546,16 @@ mod tests {
             )
         );
         assert_eq!(summary(2, 0).1, "Las ha encontrado Defender.");
+    }
+
+    #[test]
+    fn openable_launcher_urls() {
+        for ok in ["steam://uninstall/1086940", "com.epicgames.launcher://", "ms-settings:appsfeatures"] {
+            assert!(openable_url(ok), "{ok}");
+        }
+        for malo in ["steam://run/1", "steam://uninstall/1 x", "steam://uninstall/", "ms-settings:privacy"] {
+            assert!(!openable_url(malo), "{malo}");
+        }
     }
 
     #[test]

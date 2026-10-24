@@ -254,6 +254,7 @@ pub fn uninstall_entry(hive: Hive, key: String) -> Option<RawEntry> {
         system_component: flag("SystemComponent"),
         parent_key_name: k.str("ParentKeyName"),
         display_icon: k.str("DisplayIcon"),
+        install_location: k.str("InstallLocation"),
         key,
     })
 }
