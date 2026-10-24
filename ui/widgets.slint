@@ -86,7 +86,8 @@ export component Button inherits FocusScope {
             name: root.icon;
             color: root.fg;
         }
-        Text {
+        // Solo icono: sin texto ni hueco.
+        if root.text != "": Text {
             text: root.text;
             color: root.fg;
             font-weight: 500;

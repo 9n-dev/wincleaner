@@ -3,7 +3,7 @@
 pub mod defender;
 pub mod icon;
 pub mod proc;
-#[allow(dead_code)] // se usa desde la Task 5
+#[allow(dead_code)] // se usa desde la Task 6
 pub mod recycle;
 pub mod reg;
 pub mod services;
@@ -352,7 +352,6 @@ fn known_folder(id: &GUID) -> Option<PathBuf> {
 }
 
 /// Las seis carpetas del usuario con su nombre en español; las que no se pueden leer no salen.
-#[allow(dead_code)] // se usa desde la Task 5
 pub fn known_dirs() -> Vec<(PathBuf, &'static str)> {
     [
         (&FOLDERID_Documents, "Documentos"),
@@ -369,7 +368,6 @@ pub fn known_dirs() -> Vec<(PathBuf, &'static str)> {
 
 /// Zonas protegidas de Espacio. `None` (no se puede borrar nada) si falta el perfil, Windows
 /// o la ruta del `.exe`: fallo cerrado.
-#[allow(dead_code)] // se usa desde la Task 5
 pub fn space_zones(games: &[String]) -> Option<Zones> {
     let text = |p: PathBuf| p.to_string_lossy().into_owned();
     let profile = text(known_folder(&FOLDERID_Profile)?);

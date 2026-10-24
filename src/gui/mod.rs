@@ -1,10 +1,10 @@
 //! Ventana principal: crea `AppWindow`, conecta la barra lateral y monta las secciones.
 
-mod analyze;
 mod clean;
 mod procs;
 mod programs;
 mod security;
+mod space;
 mod summary;
 
 use slint::{CloseRequestResponse, ComponentHandle};
@@ -51,7 +51,7 @@ pub fn run() {
     });
     summary::init(&app);
     let _clean = clean::Clean::new(&app);
-    analyze::Analyze::new(&app);
+    space::Space::new(&app);
     programs::Programs::new(&app);
     procs::Procs::new(&app);
     security::Security::new(&app);

@@ -1,0 +1,595 @@
+// Sección Espacio: pestañas, aviso de resultado y Carpetas (unidades → analizando → carpeta).
+// Todo llega por `SpaceData`.
+import { Palette, Type, Icon } from "../theme.slint";
+import { Button, ButtonKind, Note, Pill, Seg, Bar, EmptyState, Tone } from "../widgets.slint";
+import { Head, ListBox } from "clean.slint";
+
+export struct DriveItem {
+    // «C:»
+    name: string,
+    // «Sistema»; vacío si el volumen no tiene nombre.
+    label: string,
+    // «412 GB usados de 476 GB»
+    text: string,
+    // Parte ocupada, 0..1.
+    used: float,
+    low: bool,
+    // Ya hay un análisis en memoria: el botón dice «Ver».
+    analyzed: bool,
+}
+
+export struct StripPart {
+    label: string,
+    share: float,
+    // 0..4 los cinco más grandes; 5 el resto.
+    color: int,
+}
+
+export struct SpaceRow {
+    // folder, file, lock, game o link.
+    icon: string,
+    name: string,
+    // Ruta, fecha del archivo o «Juntos».
+    sub: string,
+    size: string,
+    pct: string,
+    // Respecto a la carpeta actual, 0..1.
+    share: float,
+    color: int,
+    // "", Protegida, Sistema, Juegos, Enlace o Sin acceso.
+    badge: string,
+    can-enter: bool,
+    can-delete: bool,
+    selectable: bool,
+}
+
+export global SpaceData {
+    // 0 Carpetas, 1 Juegos, 2 Duplicados, 3 Instaladores viejos.
+    in-out property <int> tab;
+    // 0 unidades, 1 analizando, 2 carpeta.
+    in property <int> phase;
+    in property <[DriveItem]> drives;
+    in property <string> subtitle;
+    // «212 GB de 412 GB · 684 210 archivos · 1 min 05 s»
+    in property <string> progress;
+    in property <float> progress-value;
+    // Carpeta que se está leyendo.
+    in property <string> current;
+    // «Este equipo», «C:», …: la primera vuelve a las unidades.
+    in property <[string]> crumbs;
+    in property <[StripPart]> strip;
+    in property <[SpaceRow]> rows;
+    in-out property <int> selected: -1;
+    // Nota sobre la lista al elegir una fila que no se puede borrar; vacía si no hay.
+    in property <string> lock-title;
+    in property <string> lock-text;
+    // Hay carpetas sin acceso en la carpeta actual.
+    in property <bool> denied;
+    // false si no se pudieron leer las zonas protegidas: no sale ningún botón de borrar.
+    in property <bool> can-delete-any;
+    // Aviso de resultado: 0 nada, 1 ok, 2 error.
+    in property <int> note;
+    in property <string> note-title;
+    in property <string> note-text;
+    in property <bool> can-undo;
+    in property <bool> can-retry;
+    callback analyze(int);
+    callback stop();
+    callback reanalyze();
+    // Se ha elegido la fila (ya escrita en `selected`): Rust rellena la nota de bloqueo.
+    callback select(int);
+    callback enter(int);
+    callback up();
+    callback crumb(int);
+    callback open(int);
+    callback recycle(int);
+    callback undo();
+    callback retry();
+    callback dismiss();
+    callback tab-shown(int);
+}
+
+// Colores de la tira, por orden; `rest` para lo demás.
+global Strip {
+    pure public function color(c: int, rest: color) -> color {
+        return c == 0 ? Palette.info : c == 1 ? Palette.pur : c == 2 ? Palette.ac
+            : c == 3 ? Palette.warn : c == 4 ? Palette.ac2 : rest;
+    }
+}
+
+// Baldosa de 30 px con el icono.
+component Tile inherits Rectangle {
+    in property <string> icon;
+    in property <color> tint;
+    width: 30px;
+    height: 30px;
+    border-radius: 8px;
+    background: Palette.s2;
+
+    Icon {
+        x: 7px;
+        y: 7px;
+        name: root.icon;
+        color: root.tint;
+    }
+}
+
+component DriveLine {
+    in property <DriveItem> item;
+    in property <bool> first;
+    callback clicked();
+    accessible-role: list-item;
+    accessible-label: root.item.name + " " + root.item.label + ", " + root.item.text;
+
+    if !root.first: Rectangle {
+        y: 0;
+        height: 1px;
+        background: Palette.line;
+    }
+
+    HorizontalLayout {
+        padding: 11px;
+        padding-left: 16px;
+        padding-right: 16px;
+        spacing: 14px;
+
+        VerticalLayout {
+            alignment: center;
+            Tile {
+                icon: "drive";
+                tint: Palette.mu;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+
+            HorizontalLayout {
+                spacing: 4px;
+                alignment: start;
+                Text {
+                    text: root.item.name;
+                    color: Palette.tx;
+                    font-weight: 500;
+                }
+                Text {
+                    text: root.item.label;
+                    color: Palette.mu;
+                    overflow: elide;
+                }
+            }
+            Text {
+                text: root.item.text;
+                color: Palette.fa;
+                font-size: Type.label;
+                overflow: elide;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            Bar {
+                width: 220px;
+                value: root.item.used;
+                kind: root.item.low ? Tone.warn : Tone.ok;
+            }
+        }
+        Button {
+            text: root.item.analyzed ? "Ver" : "Analizar";
+            icon: root.item.analyzed ? "folder" : "search";
+            kind: root.first ? ButtonKind.primary : ButtonKind.secondary;
+            clicked => { root.clicked(); }
+        }
+    }
+}
+
+component SpaceItem {
+    in property <SpaceRow> item;
+    in property <bool> selected;
+    in property <bool> compact;
+    // `share` de la fila más grande: su barra va llena.
+    in property <float> top;
+    in property <bool> first;
+    callback select();
+    callback enter();
+    callback open();
+    callback recycle();
+    property <color> c: Strip.color(root.item.color, Palette.fa);
+    height: 68px;
+    accessible-role: list-item;
+    accessible-label: root.item.name + ", " + root.item.size;
+    accessible-action-default => {
+        if (root.item.selectable) { root.select(); }
+    }
+
+    Rectangle {
+        background: root.selected ? Palette.s2 : touch.has-hover && root.item.selectable ? Palette.s2.with-alpha(0.5) : transparent;
+    }
+    if !root.first: Rectangle {
+        y: 0;
+        height: 1px;
+        background: Palette.line;
+    }
+    if root.selected: Rectangle {
+        x: 0;
+        width: 3px;
+        background: Palette.ac;
+    }
+
+    // El doble clic entra; nunca borra.
+    touch := TouchArea {
+        enabled: root.item.selectable;
+        mouse-cursor: pointer;
+        clicked => { root.select(); }
+        double-clicked => {
+            if (root.item.can-enter) { root.enter(); }
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        spacing: 14px;
+
+        VerticalLayout {
+            alignment: center;
+            Tile {
+                icon: root.item.icon;
+                tint: root.c;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            spacing: 4px;
+
+            Text {
+                text: root.item.name;
+                color: Palette.tx;
+                font-weight: 500;
+                overflow: elide;
+            }
+            Rectangle {
+                height: 4px;
+
+                Rectangle {
+                    x: 0;
+                    width: min(parent.width, 420px);
+                    border-radius: 2px;
+                    background: Palette.s2;
+                    clip: true;
+
+                    Rectangle {
+                        x: 0;
+                        width: parent.width * Math.min(Math.max(root.item.share / Math.max(root.top, 0.0001), 0), 1);
+                        border-radius: 2px;
+                        background: root.c;
+                        opacity: 0.7;
+                    }
+                }
+            }
+            Text {
+                text: root.item.sub;
+                color: Palette.fa;
+                font-family: Type.mono;
+                font-size: Type.label;
+                overflow: elide;
+            }
+        }
+        if !root.compact && root.item.badge != "": VerticalLayout {
+            alignment: center;
+            Pill {
+                text: root.item.badge;
+                icon: root.item.badge == "Juegos" ? "game" : root.item.badge == "Enlace" ? "link"
+                    : root.item.badge == "Sistema" ? "" : "lock";
+            }
+        }
+        Text {
+            width: 70px;
+            text: root.item.size;
+            color: Palette.tx;
+            font-weight: 600;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+        }
+        Text {
+            width: 46px;
+            text: root.item.pct;
+            color: Palette.fa;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+        }
+        if root.selected && root.item.can-delete: HorizontalLayout {
+            spacing: 6px;
+            alignment: center;
+            VerticalLayout {
+                alignment: center;
+                Button {
+                    icon: "folder";
+                    accessible-label: "Abrir en el Explorador";
+                    clicked => { root.open(); }
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                Button {
+                    text: root.compact ? "" : "Papelera";
+                    icon: "trash";
+                    accessible-label: "Enviar a la papelera";
+                    clicked => { root.recycle(); }
+                }
+            }
+        }
+        if root.selected && !root.item.can-delete: Text {
+            text: "Solo se puede ver";
+            color: Palette.fa;
+            font-size: Type.label;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// Parte de la ruta de navegación; la última no se pulsa.
+component Crumb inherits Rectangle {
+    in property <string> text;
+    in property <bool> last;
+    callback clicked();
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-action-default => {
+        if (!root.last) { root.clicked(); }
+    }
+
+    Text {
+        text: root.text;
+        color: root.last ? Palette.tx : Palette.mu;
+        font-weight: root.last ? 600 : 400;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+    TouchArea {
+        enabled: !root.last;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component SpacePage inherits Rectangle {
+    in property <bool> compact;
+    in property <bool> admin;
+    callback relaunch-admin();
+    property <bool> folders: SpaceData.tab == 0;
+    property <int> phase: SpaceData.phase;
+    property <bool> lock: SpaceData.lock-title != "";
+
+    VerticalLayout {
+        padding-top: root.compact ? 20px : 28px;
+        padding-bottom: root.compact ? 20px : 28px;
+        padding-left: root.compact ? 20px : 32px;
+        padding-right: root.compact ? 20px : 32px;
+        spacing: 18px;
+        // Como en Programas: la lista y el estado vacío piden más de lo que cabe y se encogen.
+        alignment: start;
+
+        Head {
+            vertical-stretch: 0;
+            title: "Espacio";
+            text: SpaceData.subtitle;
+
+            if root.folders && root.phase != 0: Button {
+                text: root.phase == 1 ? "Detener" : "Volver a analizar";
+                icon: root.phase == 1 ? "stop" : "refresh";
+                clicked => {
+                    if (root.phase == 1) { SpaceData.stop(); } else { SpaceData.reanalyze(); }
+                }
+            }
+        }
+
+        HorizontalLayout {
+            vertical-stretch: 0;
+            alignment: start;
+            Seg {
+                items: ["Carpetas", "Juegos", "Duplicados", "Instaladores viejos"];
+                current <=> SpaceData.tab;
+                selected(i) => { SpaceData.tab-shown(i); }
+            }
+        }
+
+        if SpaceData.note != 0: Note {
+            vertical-stretch: 0;
+            kind: SpaceData.note == 1 ? Tone.ok : Tone.bad;
+            icon: SpaceData.note == 1 ? "check" : "warn";
+            title: SpaceData.note-title;
+            text: SpaceData.note-text;
+
+            if SpaceData.can-undo: Button {
+                text: "Deshacer";
+                clicked => { SpaceData.undo(); }
+            }
+            if SpaceData.can-retry: Button {
+                text: "Reintentar";
+                clicked => { SpaceData.retry(); }
+            }
+            Button {
+                icon: "x";
+                accessible-label: "Cerrar aviso";
+                clicked => { SpaceData.dismiss(); }
+            }
+        }
+
+        if root.folders && root.phase == 0 && SpaceData.drives.length > 0: ListBox {
+            vertical-stretch: 0;
+            for d[i] in SpaceData.drives: DriveLine {
+                item: d;
+                first: i == 0;
+                clicked => { SpaceData.analyze(i); }
+            }
+        }
+
+        if root.folders && root.phase == 1: Rectangle {
+            vertical-stretch: 0;
+            background: Palette.s1;
+            border-width: 1px;
+            border-color: Palette.line;
+            border-radius: 12px;
+
+            VerticalLayout {
+                padding: 18px;
+                spacing: 10px;
+
+                HorizontalLayout {
+                    spacing: 12px;
+                    Text {
+                        text: SpaceData.subtitle;
+                        color: Palette.tx;
+                        font-weight: 600;
+                        horizontal-stretch: 1;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: SpaceData.progress;
+                        color: Palette.mu;
+                    }
+                }
+                Bar {
+                    height: 8px;
+                    value: SpaceData.progress-value;
+                }
+                Text {
+                    text: SpaceData.current;
+                    color: Palette.fa;
+                    font-family: Type.mono;
+                    font-size: Type.label;
+                    overflow: elide;
+                }
+            }
+        }
+
+        if root.folders && root.phase == 2: HorizontalLayout {
+            vertical-stretch: 0;
+            spacing: 6px;
+            alignment: start;
+
+            Button {
+                icon: "back";
+                accessible-label: "Volver";
+                clicked => { SpaceData.up(); }
+            }
+            for c[i] in SpaceData.crumbs: HorizontalLayout {
+                spacing: 6px;
+                Crumb {
+                    text: c;
+                    last: i == SpaceData.crumbs.length - 1;
+                    clicked => { SpaceData.crumb(i); }
+                }
+                if i < SpaceData.crumbs.length - 1: Text {
+                    text: "›";
+                    color: Palette.line2;
+                    vertical-alignment: center;
+                }
+            }
+        }
+        // La nota de bloqueo de la fila elegida o, si no hay, la de carpetas sin acceso.
+        if root.folders && root.phase == 2 && (root.lock || (SpaceData.denied && !root.admin)): Note {
+            vertical-stretch: 0;
+            kind: root.lock ? Tone.neutral : Tone.warn;
+            icon: "lock";
+            title: root.lock ? SpaceData.lock-title : "Hay carpetas sin acceso.";
+            text: root.lock ? SpaceData.lock-text
+                : "No se sabe cuánto ocupan. Reinicia WinCleaner como administrador para verlas.";
+
+            if !root.lock: Button {
+                text: root.compact ? "" : "Reiniciar como admin.";
+                icon: "shield";
+                accessible-label: "Reiniciar como administrador";
+                clicked => { root.relaunch-admin(); }
+            }
+        }
+        // Con la nota de bloqueo, la tira deja sitio a la lista (como en la maqueta).
+        if root.folders && root.phase == 2 && !root.lock && SpaceData.strip.length > 0: VerticalLayout {
+            vertical-stretch: 0;
+            spacing: 12px;
+
+            // Las esquinas van en la primera y la última parte (el recorte no redondea).
+            HorizontalLayout {
+                height: 30px;
+                spacing: 2px;
+                for p[i] in SpaceData.strip: Rectangle {
+                    min-width: 0;
+                    preferred-width: 0;
+                    horizontal-stretch: p.share;
+                    border-top-left-radius: i == 0 ? 8px : 0;
+                    border-bottom-left-radius: self.border-top-left-radius;
+                    border-top-right-radius: i == SpaceData.strip.length - 1 ? 8px : 0;
+                    border-bottom-right-radius: self.border-top-right-radius;
+                    background: Strip.color(p.color, Palette.line2);
+                }
+            }
+            HorizontalLayout {
+                spacing: 14px;
+                alignment: start;
+                for p in SpaceData.strip: HorizontalLayout {
+                    spacing: 5px;
+                    VerticalLayout {
+                        alignment: center;
+                        Rectangle {
+                            width: 9px;
+                            height: 9px;
+                            border-radius: 3px;
+                            background: Strip.color(p.color, Palette.line2);
+                        }
+                    }
+                    Text {
+                        text: p.label;
+                        color: Palette.mu;
+                        font-size: Type.label;
+                        overflow: elide;
+                    }
+                }
+            }
+        }
+        // Crece hasta su contenido y, si no cabe, se desplaza por dentro.
+        if root.folders && root.phase == 2 && SpaceData.rows.length > 0: ListBox {
+            preferred-height: SpaceData.rows.length * 68px;
+            min-height: 100px;
+
+            Flickable {
+                vertical-stretch: 1;
+                content-width: self.width;
+                content-height: list.preferred-height;
+
+                list := VerticalLayout {
+                    width: parent.width;
+                    for row[i] in SpaceData.rows: SpaceItem {
+                        item: row;
+                        top: SpaceData.rows[0].share;
+                        first: i == 0;
+                        compact: root.compact;
+                        selected: SpaceData.selected == i;
+                        select => {
+                            SpaceData.selected = i;
+                            SpaceData.select(i);
+                        }
+                        enter => { SpaceData.enter(i); }
+                        open => { SpaceData.open(i); }
+                        recycle => { SpaceData.recycle(i); }
+                    }
+                }
+            }
+        }
+        // Un solo estado vacío para todo: otras pestañas, unidades, analizando y carpeta vacía.
+        if !root.folders || root.phase != 2 || SpaceData.rows.length == 0: EmptyState {
+            preferred-height: 100000px;
+            min-height: 120px;
+            // Juegos, Duplicados e Instaladores viejos llegan en sus tareas.
+            icon: !root.folders ? (SpaceData.tab == 1 ? "game" : SpaceData.tab == 2 ? "copy" : "box")
+                : root.phase == 0 ? "disk" : root.phase == 2 ? "folder" : "";
+            title: !root.folders ? "Todavía no está disponible"
+                : root.phase == 0 ? (SpaceData.drives.length > 0 ? "Elige una unidad para ver qué ocupa" : "No hay unidades")
+                : root.phase == 2 ? "Esta carpeta está vacía" : "";
+            text: !root.folders || root.phase == 2 ? ""
+                : root.phase == 1 ? "Las carpetas aparecerán en cuanto termine."
+                : SpaceData.drives.length > 0 ? "En un disco grande tarda unos minutos. Puedes seguir usando el equipo."
+                : "WinCleaner no ha encontrado ningún disco fijo.";
+        }
+    }
+}

@@ -143,34 +143,97 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.set_locked(false);
     modal.set_open(false);
 
-    // Analizar, con los datos de las maquetas.
-    use wincleaner::ui::{AnalyzeData, DirRow};
-    let data = app.global::<AnalyzeData>();
-    data.set_drives(model(["C: · 64 GB libres", "D: · 1,2 TB libres"].map(Into::into).to_vec()));
-    data.set_title("Analizando C:…".into());
-    data.set_progress("412 803 archivos · 1 min 12 s".into());
+    // Espacio, con los datos de `espacio*()`, `ROOT` y `VID` de las maquetas.
+    use wincleaner::ui::{DriveItem, SpaceData, SpaceRow, StripPart};
+    let data = app.global::<SpaceData>();
+    data.set_drives(model(vec![
+        DriveItem { name: "C:".into(), label: "Sistema".into(), text: "412 GB usados de 476 GB".into(), used: 0.87, low: true, analyzed: false },
+        DriveItem { name: "D:".into(), label: "Datos".into(), text: "620 GB usados de 1,8 TB".into(), used: 0.34, low: false, analyzed: false },
+    ]));
+    data.set_progress("212 GB de 412 GB · 684 210 archivos · 1 min 05 s".into());
+    data.set_progress_value(0.51);
     data.set_current("C:\\Users\\ana\\AppData\\Local\\Packages\\…".into());
-    data.set_summary("Analizados 1 284 112 archivos en 2 min 41 s.".into());
-    data.set_rows(model(
-        [
-            ("C:\\Users\\ana\\AppData\\Local\\Steam\\steamapps\\common\\Baldur's Gate 3", "118 GB", 1.0),
-            ("C:\\Users\\ana\\Videos\\OBS", "41,2 GB", 0.35),
-            ("C:\\Windows\\WinSxS", "9,8 GB", 0.08),
-            ("C:\\Users\\ana\\AppData\\Local\\Docker\\wsl", "8,6 GB", 0.07),
-            ("C:\\hiberfil.sys", "6,4 GB", 0.05),
-            ("C:\\Users\\ana\\AppData\\Local\\Google\\Chrome\\User Data", "3,9 GB", 0.03),
-            ("C:\\ProgramData\\Package Cache", "2,7 GB", 0.02),
-            ("C:\\Users\\ana\\Downloads\\isos", "2,1 GB", 0.02),
-        ]
-        .map(|(p, s, share)| DirRow { path: p.into(), size: s.into(), share })
-        .to_vec(),
-    ));
+    data.set_can_delete_any(true);
+    // (icono, nombre, ruta, tamaño en GB, %, color, pastilla, se puede borrar); `total` es la carpeta.
+    type Fila<'a> = (&'a str, &'a str, &'a str, f32, &'a str, i32, &'a str, bool);
+    let filas = |v: &[Fila], total: f32| {
+        let rows: Vec<SpaceRow> = v
+            .iter()
+            .map(|&(icon, name, sub, gb, pct, color, badge, del)| SpaceRow {
+                icon: icon.into(),
+                name: name.into(),
+                sub: sub.into(),
+                size: format!("{gb} GB").replace('.', ",").into(),
+                pct: pct.into(),
+                share: gb / total,
+                color,
+                badge: badge.into(),
+                can_enter: icon == "folder",
+                can_delete: del,
+                selectable: !name.ends_with("más pequeños"),
+            })
+            .collect();
+        let mut strip: Vec<StripPart> =
+            rows.iter().filter(|r| r.color < 5).map(|r| StripPart { label: r.name.clone(), share: r.share, color: r.color }).collect();
+        let rest = 1.0 - strip.iter().map(|p| p.share).sum::<f32>();
+        strip.push(StripPart { label: "Resto".into(), share: rest, color: 5 });
+        (model(rows), model(strip))
+    };
+    let raiz = filas(
+        &[
+            ("game", "Steam", "C:\\Program Files (x86)\\Steam", 186.0, "45 %", 0, "Juegos", false),
+            ("folder", "Vídeos", "C:\\Users\\ana\\Videos", 64.0, "16 %", 1, "", true),
+            ("lock", "Windows", "C:\\Windows", 38.0, "9 %", 2, "Protegida", false),
+            ("folder", "Descargas", "C:\\Users\\ana\\Downloads", 29.0, "7 %", 3, "", true),
+            ("lock", "Archivos de programa", "C:\\Program Files", 24.0, "6 %", 4, "Protegida", false),
+            ("file", "hiberfil.sys", "Archivo de hibernación de Windows", 6.4, "2 %", 5, "Sistema", false),
+            ("folder", "AppData", "C:\\Users\\ana\\AppData", 5.9, "1 %", 5, "", true),
+        ],
+        412.0,
+    );
+    let videos = filas(
+        &[
+            ("folder", "OBS", "C:\\Users\\ana\\Videos\\OBS", 41.2, "64 %", 0, "", true),
+            ("file", "boda_prima_4K.mov", "14/03/2024", 12.8, "20 %", 1, "", true),
+            ("folder", "Capturas", "C:\\Users\\ana\\Videos\\Captures", 6.1, "10 %", 2, "", true),
+            ("file", "partida_final.mkv", "02/09/2026", 2.4, "4 %", 3, "", true),
+            ("file", "1 284 archivos más pequeños", "Juntos", 1.5, "2 %", 5, "", false),
+        ],
+        64.0,
+    );
+    let crumbs = |v: &[&str]| model(v.iter().map(|&c| c.into()).collect::<Vec<slint::SharedString>>());
     app.set_section(2);
-    for (nombre, phase, selected) in [("analizar", 0, -1), ("analizar-progreso", 1, -1), ("analizar-resultados", 2, 1)] {
+    for (nombre, phase, filas, migas, selected, lock) in [
+        ("espacio", 0, &raiz, &["Este equipo", "C:"][..], -1, false),
+        ("espacio-analizando", 1, &raiz, &["Este equipo", "C:"][..], -1, false),
+        ("espacio-raiz", 2, &raiz, &["Este equipo", "C:"][..], 1, false),
+        ("espacio-carpeta", 2, &videos, &["Este equipo", "C:", "Usuarios", "ana", "Vídeos"][..], 1, false),
+        ("espacio-protegida", 2, &raiz, &["Este equipo", "C:"][..], 2, true),
+    ] {
+        data.set_subtitle(
+            match phase {
+                0 => "Mira a dónde va cada GB y libera lo que no necesites.",
+                1 => "Analizando C:…",
+                _ => "C: · 412 GB usados de 476 GB · analizado hace 2 min",
+            }
+            .into(),
+        );
         data.set_phase(phase);
+        data.set_rows(filas.0.clone());
+        data.set_strip(filas.1.clone());
+        data.set_crumbs(crumbs(migas));
         data.set_selected(selected);
+        data.set_lock_title(if lock { "Windows está protegida." } else { "" }.into());
+        data.set_lock_text(
+            if lock {
+                "Puedes ver qué ocupa, pero no borrarla desde aquí: romperías el sistema. Para liberar espacio de Windows usa «Limpiar»."
+            } else {
+                ""
+            }
+            .into(),
+        );
         for (suffix, w, h) in [("", 1100, 720), ("-min", 880, 600)] {
-            guarda(&format!("wcv2-{nombre}{suffix}"), &headless::render(app.window(), w, h), w, h)?;
+            guarda(&format!("wces-{nombre}{suffix}"), &headless::render(app.window(), w, h), w, h)?;
         }
     }
 

@@ -1,4 +1,3 @@
-pub mod analyze;
 pub mod categories;
 pub mod checks;
 pub mod cmdline;
