@@ -547,14 +547,21 @@ impl Space {
         let (k, at2) = (self.clone(), at.clone());
         let on_ok = move || k.with(|app| k.trash(app, at, id, false));
         let k = self.clone();
-        let on_alt = move || {
-            k.with(|app| {
-                let text = format!("No pasa por la papelera: se borra ya y libera {} al momento.", format::bytes(size));
-                let k2 = k.clone();
-                ui::purge(app, lines, &text, move || k2.with(|app| k2.trash(app, at2, id, true)));
-            })
-        };
+        let on_alt = move || k.with(|app| k.ask_purge(app, at2, id));
         confirm_with_alt(app, ask, on_ok, on_alt);
+    }
+
+    /// «¿Borrar del todo?» para el nodo `id` de `at`, con lo que ocupa ahora. Solo borra si se
+    /// escribe BORRAR y se confirma; también desde «Reintentar».
+    fn ask_purge(&self, app: &AppWindow, at: At, id: Id) {
+        if app.get_locked() {
+            return;
+        }
+        let Some((_, name, size)) = STATE.with_borrow_mut(|st| target(st, &at, id)) else { return };
+        let lines = vec![ModalLine { label: name.into(), value: format::bytes(size).into() }];
+        let text = format!("No pasa por la papelera: se borra ya y libera {} al momento.", format::bytes(size));
+        let k = self.clone();
+        ui::purge(app, lines, &text, move || k.with(|app| k.trash(app, at, id, true)));
     }
 
     /// Envía a la papelera (o borra del todo) el nodo `id` de `at`, si se sigue pudiendo.
@@ -574,7 +581,8 @@ impl Space {
         } else {
             self.send_to_bin(vec![path], vec![name], size, after);
         }
-        let retry: Retry = Rc::new(move |k, app| k.trash(app, at.clone(), id, purge));
+        // Reintentar la papelera se repite tal cual (se puede recuperar); borrar del todo vuelve a pedir BORRAR.
+        let retry: Retry = Rc::new(move |k, app| if purge { k.ask_purge(app, at.clone(), id) } else { k.trash(app, at.clone(), id, false) });
         STATE.with_borrow_mut(|st| st.last.retry = Some(retry));
     }
 

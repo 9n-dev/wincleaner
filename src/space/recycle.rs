@@ -77,6 +77,8 @@ pub fn outcome_text(o: &Outcome, purge: bool) -> (bool, String, String) {
     let pl = |sing: &str, plur: &str| if one { sing.to_string() } else { plur.to_string() };
     let noun = |w: &str| if one { format!("1 {w}") } else { format!("{n} {w}s") };
     let files = noun("archivo");
+    // Protegido u otro motivo se cuentan por elemento elegido (carpeta o archivo), no por archivo.
+    let items = noun("elemento");
     let (cause, advice) = match main {
         Reason::NoBin => (
             format!("{} no {} en la papelera o su unidad no tiene", noun("elemento"), pl("cabe", "caben")),
@@ -91,10 +93,10 @@ pub fn outcome_text(o: &Outcome, purge: bool) -> (bool, String, String) {
             "Reinicia WinCleaner como administrador y vuelve a intentarlo.".to_string(),
         ),
         Reason::Protected => (
-            format!("{files} {} en una carpeta protegida", pl("está", "están")),
+            format!("{items} {} en una carpeta protegida", pl("está", "están")),
             "WinCleaner no borra nada en las carpetas del sistema.".to_string(),
         ),
-        Reason::Other(_) => (format!("{files} no se {} podido borrar", pl("ha", "han")), "Vuelve a intentarlo.".to_string()),
+        Reason::Other(_) => (format!("{items} no se {} podido borrar", pl("ha", "han")), "Vuelve a intentarlo.".to_string()),
     };
     let rest = o.failed.len() - n;
     let rest = if rest > 0 { format!(" y {rest} más no se han podido borrar") } else { String::new() };
@@ -252,6 +254,16 @@ mod tests {
             undo_text(&many, &many[1..]),
             (false, "No se han podido restaurar 2 elementos: b, c.".into(), "Búscalos en la papelera.".into())
         );
+    }
+
+    #[test]
+    fn outcome_purge_failed_counts_items() {
+        let o = outcome(&["OBS"], 38 * GB, 3 * GB, vec![Reason::Other(0)]);
+        let (ok, _, text) = outcome_text(&o, true);
+        assert!(!ok);
+        assert!(text.starts_with("1 elemento no se ha podido borrar (se han liberado 38 GB; quedan 3 GB)."), "{text}");
+        let o = outcome(&["a", "b"], 0, 2 * GB, vec![Reason::Protected; 2]);
+        assert!(outcome_text(&o, false).2.starts_with("2 elementos están en una carpeta protegida"));
     }
 
     #[test]
