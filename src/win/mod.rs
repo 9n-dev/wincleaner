@@ -1,11 +1,14 @@
 //! Capa fina sobre Win32: entorno, permisos, papelera, unidades y Explorador.
 
+pub mod defender;
 pub mod icon;
 pub mod proc;
 pub mod reg;
+pub mod services;
 pub mod startup;
 pub mod trust;
 pub mod uninstall;
+pub mod wmi;
 
 use std::ffi::{OsStr, OsString};
 use std::iter::once;
@@ -15,6 +18,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::ptr::{null, null_mut};
 
+use winapi::Interface;
 use winapi::shared::guiddef::GUID;
 use winapi::shared::minwindef::{BOOL, DWORD};
 use winapi::shared::ntdef::{PULARGE_INTEGER, PWSTR};
@@ -26,8 +30,8 @@ use winapi::um::fileapi::{
 use winapi::um::knownfolders::{
     FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads, FOLDERID_LocalAppData,
     FOLDERID_Music, FOLDERID_Pictures, FOLDERID_Profile, FOLDERID_ProgramData,
-    FOLDERID_ProgramFiles, FOLDERID_ProgramFilesX86, FOLDERID_System, FOLDERID_Videos,
-    FOLDERID_Windows,
+    FOLDERID_ProgramFiles, FOLDERID_ProgramFilesX86, FOLDERID_Public, FOLDERID_RoamingAppData,
+    FOLDERID_System, FOLDERID_Videos, FOLDERID_Windows,
 };
 use winapi::um::objbase::COINIT_APARTMENTTHREADED;
 use winapi::um::shellapi::{
@@ -37,10 +41,12 @@ use winapi::um::shellapi::{
 use winapi::um::shlobj::SHGetKnownFolderPath;
 use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
 use winapi::um::winbase::DRIVE_FIXED;
-use winapi::um::winnt::HANDLE;
+use winapi::um::unknwnbase::IUnknown;
+use winapi::um::winnt::{HANDLE, HRESULT};
 use winapi::um::winuser::SW_SHOWNORMAL;
 
 use wincleaner::categories::Env;
+use wincleaner::checks::{self, Places};
 
 // winapi 0.3.9 no declara IsUserAnAdmin, aunque shell32 la exporta.
 #[link(name = "shell32")]
@@ -58,6 +64,41 @@ impl Drop for Handle {
             // SAFETY: lo abrió Windows para nosotros y solo se cierra aquí.
             unsafe { CloseHandle(self.0) };
         }
+    }
+}
+
+/// Interfaz COM propia (nunca nula); se suelta al salir de su ámbito.
+pub(crate) struct Com<T: Interface>(pub(crate) *mut T);
+
+impl<T: Interface> Com<T> {
+    /// Llama a `f` con un puntero de salida y se queda con lo que deje si `f` tiene éxito.
+    ///
+    /// # Safety
+    /// `f` deja en el puntero nulo o una interfaz `T` válida con una referencia que pasa a ser nuestra.
+    pub(crate) unsafe fn out(f: impl FnOnce(*mut *mut T) -> HRESULT) -> Result<Self, HRESULT> {
+        let mut p: *mut T = null_mut();
+        let hr = f(&mut p);
+        if p.is_null() {
+            // E_POINTER: «tuvo éxito» pero no dio nada.
+            return Err(if hr < 0 { hr } else { 0x8000_4003_u32 as i32 });
+        }
+        let c = Com(p);
+        if hr < 0 { Err(hr) } else { Ok(c) }
+    }
+}
+
+impl<T: Interface> std::ops::Deref for Com<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        // SAFETY: nunca es nulo y vive mientras tengamos la referencia.
+        unsafe { &*self.0 }
+    }
+}
+
+impl<T: Interface> Drop for Com<T> {
+    fn drop(&mut self) {
+        // SAFETY: `self.0` es una interfaz válida con una referencia nuestra, que se suelta aquí.
+        unsafe { (*self.0.cast::<IUnknown>()).Release() };
     }
 }
 
@@ -220,6 +261,48 @@ pub fn open_folder(dir: &Path) {
     let (verb, file) = (wide("open"), wide(dir));
     // SAFETY: cadenas UTF-16 terminadas en nulo que viven durante la llamada.
     unsafe { ShellExecuteW(null_mut(), verb.as_ptr(), file.as_ptr(), null(), null(), SW_SHOWNORMAL) };
+}
+
+/// Carpetas en las que un ejecutable da que pensar, para las comprobaciones de seguridad.
+/// Las que no se pueden leer quedan vacías y no cuentan.
+#[expect(dead_code, reason = "lo usa la Task 14")]
+pub fn security_places() -> Places {
+    let folder = |id: &GUID| known_folder(id).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+    let mut temp: Vec<String> = ["TEMP", "TMP"]
+        .iter()
+        .filter_map(std::env::var_os)
+        .map(|t| long_path(Path::new(&t)).to_string_lossy().into_owned())
+        .collect();
+    temp.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+    Places {
+        temp,
+        downloads: folder(&FOLDERID_Downloads),
+        app_data: folder(&FOLDERID_RoamingAppData),
+        local_app_data: folder(&FOLDERID_LocalAppData),
+        public: folder(&FOLDERID_Public),
+        system_root: folder(&FOLDERID_Windows),
+    }
+}
+
+/// Abre `url` con el programa predeterminado. Solo `https://` y `windowsdefender:`
+/// (`checks::openable_url`): nada de `file:`, `http:`, `javascript:` ni rutas.
+#[expect(dead_code, reason = "lo usa la Task 14")]
+pub fn open_url(url: &str) {
+    if !checks::openable_url(url) {
+        return;
+    }
+    let (verb, file) = (wide("open"), wide(url));
+    // SAFETY: cadenas UTF-16 terminadas en nulo que viven durante la llamada.
+    unsafe { ShellExecuteW(null_mut(), verb.as_ptr(), file.as_ptr(), null(), null(), SW_SHOWNORMAL) };
+}
+
+/// Abre `path` en el Bloc de notas, lanzado por ruta absoluta (`System32\notepad.exe`).
+#[expect(dead_code, reason = "lo usa la Task 14")]
+pub fn open_with_notepad(path: &Path) {
+    let Some(system) = known_folder(&FOLDERID_System) else { return };
+    let _ = Command::new(system.join("notepad.exe"))
+        .raw_arg(format!("\"{}\"", path.display()))
+        .spawn();
 }
 
 fn wide(s: impl AsRef<OsStr>) -> Vec<u16> {

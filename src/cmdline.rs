@@ -45,6 +45,21 @@ pub fn resolve(exe: &str, system32: &str) -> Option<String> {
     suelto.then(|| format!("{}\\{exe}", system32.trim_end_matches('\\')))
 }
 
+/// Ejecutable de la `ImagePath` de un servicio, ya con las variables expandidas: quita `\??\`,
+/// cambia `\SystemRoot\` por la carpeta de Windows y después aplica `resolve`.
+pub fn service_exe(image_path: &str, system_root: &str, system32: &str) -> Option<String> {
+    let (exe, _) = split_exe(image_path)?;
+    let strip = |pre: &str| exe.get(..pre.len()).filter(|p| p.eq_ignore_ascii_case(pre)).map(|_| &exe[pre.len()..]);
+    let exe = if let Some(r) = strip("\\??\\") {
+        r.to_string()
+    } else if let Some(r) = strip("\\SystemRoot\\") {
+        format!("{}\\{r}", system_root.trim_end_matches('\\'))
+    } else {
+        exe.clone()
+    };
+    resolve(&exe, system32)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -82,6 +97,21 @@ mod tests {
         assert_eq!(resolve("x.exe", "\\\\srv\\s"), None);
         for malo in ["sub\\x.exe", "\\\\srv\\x.exe", "\\\\?\\C:\\x.exe", "C:x.exe", "\\x.exe", "..", "", "a/b.exe", "C:\\a\u{7}.exe"] {
             assert_eq!(resolve(malo, s), None, "{malo}");
+        }
+    }
+
+    #[test]
+    fn service_exe_rules() {
+        let (w, s) = ("C:\\Windows", "C:\\Windows\\System32");
+        let svc = |p| service_exe(p, w, s);
+        assert_eq!(svc("\"C:\\P F\\a.exe\" -run"), Some("C:\\P F\\a.exe".into()));
+        assert_eq!(svc("C:\\P F\\a.exe -run"), Some("C:\\P F\\a.exe".into()));
+        assert_eq!(svc("\\SystemRoot\\System32\\x.exe -k"), Some("C:\\Windows\\System32\\x.exe".into()));
+        assert_eq!(svc("\\systemroot\\x.exe"), Some("C:\\Windows\\x.exe".into()));
+        assert_eq!(svc("\"\\??\\D:\\s\\y.exe\""), Some("D:\\s\\y.exe".into()));
+        assert_eq!(svc("lsass.exe"), Some("C:\\Windows\\System32\\lsass.exe".into()));
+        for malo in ["", "\\\\srv\\x.exe", "System32\\x.exe", "\\??\\UNC\\srv\\x.exe"] {
+            assert_eq!(svc(malo), None, "{malo}");
         }
     }
 }

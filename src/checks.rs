@@ -259,6 +259,11 @@ pub fn search_url(file_name: &str) -> String {
     s
 }
 
+/// Las únicas URL que WinCleaner abre: `https://…` y `windowsdefender:…`, sin caracteres de control.
+pub fn openable_url(url: &str) -> bool {
+    (url.starts_with("https://") || url.starts_with("windowsdefender:")) && !url.chars().any(char::is_control)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -393,5 +398,14 @@ mod tests {
         assert_eq!(search_url("juego crack.exe"), "https://www.bing.com/search?q=juego%20crack.exe");
         assert_eq!(search_url("C:\\Users\\ana\\x.exe"), "https://www.bing.com/search?q=x.exe");
         assert_eq!(search_url("ñ"), "https://www.bing.com/search?q=%C3%B1");
+    }
+
+    #[test]
+    fn openable_urls() {
+        assert!(openable_url("https://www.bing.com/search?q=x.exe"));
+        assert!(openable_url("windowsdefender://threat"));
+        for malo in ["http://x", "file:///C:/x", "javascript:alert(1)", "HTTPS://x", "C:\\x.exe", "", " https://x", "https://x\n"] {
+            assert!(!openable_url(malo), "{malo}");
+        }
     }
 }

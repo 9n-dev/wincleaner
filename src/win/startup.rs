@@ -16,12 +16,11 @@ use winapi::um::knownfolders::{FOLDERID_CommonStartup, FOLDERID_Startup};
 use winapi::um::objidl::IPersistFile;
 use winapi::um::shobjidl_core::IShellLinkW;
 use winapi::um::sysinfoapi::GetSystemTimeAsFileTime;
-use winapi::um::unknwnbase::IUnknown;
 use wincleaner::cmdline;
 use wincleaner::programs::Hive;
 use wincleaner::startup::{self, Source};
 
-use super::{is_admin, known_folder, reg, wide};
+use super::{Com, is_admin, known_folder, reg, wide};
 
 const RUN: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 
@@ -94,16 +93,6 @@ pub fn set_enabled(item: &Item, on: bool) -> Result<(), u32> {
     let now = (u64::from(ft.dwHighDateTime) << 32) | u64::from(ft.dwLowDateTime);
     let (hive, key) = startup::approved_key(item.source);
     reg::write_binary(hive, key, &item.approved_name, &startup::encode(on, now))
-}
-
-/// Interfaz COM propia; se suelta al salir de su ámbito.
-struct Com<T: Interface>(*mut T);
-
-impl<T: Interface> Drop for Com<T> {
-    fn drop(&mut self) {
-        // SAFETY: `self.0` es una interfaz válida con una referencia nuestra, que se suelta aquí.
-        unsafe { (*self.0.cast::<IUnknown>()).Release() };
-    }
 }
 
 /// Destino del acceso directo `lnk`, tal cual lo guarda (sin `Resolve`: no se busca nada).
