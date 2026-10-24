@@ -34,6 +34,15 @@ fn comps(p: &str) -> Vec<&str> {
     p.split(['\\', '/']).filter(|c| !c.is_empty()).collect()
 }
 
+/// Formas que Win32 resuelve a otra ruta (puntos o espacios finales, nombres cortos 8.3) o que no son
+/// nombres de archivo: no se pueden comparar en léxico, así que se rechazan.
+fn aliased(p: &str) -> bool {
+    comps(p).iter().any(|c| {
+        c.ends_with(['.', ' ']) || c.contains(['*', '?', '"', '<', '>', '|'])
+            || c.as_bytes().windows(2).any(|w| w[0] == b'~' && w[1].is_ascii_digit())
+    })
+}
+
 impl Zones {
     pub fn new(drives: &[String], system: &[String], profile: &str, known: &[(String, &'static str)], exe: &str,
         games: &[String]) -> Zones {
@@ -42,6 +51,10 @@ impl Zones {
             trees.extend(ROOT_TREES.iter().map(|t| format!(r"{}\{t}", d.trim_end_matches(['\\', '/']))));
         }
         let exe_dir = exe.rfind(['\\', '/']).map_or("", |i| &exe[..i]).to_string();
+        // La excepción del perfil solo vale si cuelga de un árbol y no es un árbol ni lo contiene.
+        let ok = trees.iter().any(|t| is_inside(profile, t))
+            && !trees.iter().any(|t| same(profile, t) || is_inside(t, profile));
+        let profile = if ok { profile } else { "" };
         Zones { trees, profile: profile.into(), known: known.to_vec(), exe: exe.into(), exe_dir,
             games: games.to_vec() }
     }
@@ -65,7 +78,7 @@ impl Zones {
     }
 
     pub fn check(&self, path: &str) -> Option<Block> {
-        if !is_valid(path) {
+        if !is_valid(path) || aliased(path) {
             return Some(Block::Protected);
         }
         let c = comps(path);
@@ -95,7 +108,7 @@ impl Zones {
 
     /// Duplicados no entra aquí: árboles protegidos, juegos y `AppData`. Las raíces de unidad sí se recorren.
     pub fn skip_walk(&self, dir: &str) -> bool {
-        if !is_valid(dir) {
+        if !is_valid(dir) || aliased(dir) {
             return true;
         }
         self.in_tree(dir) || self.in_game(dir)
@@ -156,7 +169,18 @@ mod tests {
     #[test]
     fn odd_forms_fail_closed() {
         all(&[r"C:\Users\ana\Videos\..\..\..\Windows", r"\\?\C:\Users\ana\Videos\x.mov", r"\\server\share\x", r"Videos\x",
-            r"C:\Users\ana\Videos\x.mov:zone", ""], Some(Block::Protected));
+            r"C:\Users\ana\Videos\x.mov:zone", "", r"C:\Windows.", r"C:\Windows ", r"C:\Program Files \x",
+            r"C:\PROGRA~1\App", r"C:\WINDOW~1", r"C:\Users\ana\Videos\a*.mov"], Some(Block::Protected));
+    }
+
+    #[test]
+    fn hostile_profile_ignored() {
+        for prof in [r"C:\", r"C:\Users"] {
+            let z = Zones::new(&[r"C:\".to_string()], &[], prof, &[], r"C:\x\w.exe", &[]);
+            for p in [r"C:\Windows\x", r"C:\Users\pepe\a"] {
+                assert_eq!(z.check(p), Some(Block::Protected), "{prof} {p}");
+            }
+        }
     }
 
     #[test]
@@ -193,7 +217,7 @@ mod tests {
     #[test]
     fn skip_walk_rules() {
         let z = z();
-        for p in [r"C:\Windows", r"C:\Users\ana\AppData", r"C:\Users\pepe", r"D:\SteamLibrary\steamapps\common\Baldurs Gate 3"] {
+        for p in [r"C:\Windows", r"C:\Windows.", r"C:\PROGRA~1\App", r"C:\Users\ana\AppData", r"C:\Users\pepe", r"D:\SteamLibrary\steamapps\common\Baldurs Gate 3"] {
             assert!(z.skip_walk(p), "{p}");
         }
         for p in [r"C:\", r"D:\", r"C:\Users\ana\Documents", r"C:\Users\ana\source"] {
