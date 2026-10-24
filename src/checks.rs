@@ -70,7 +70,13 @@ fn inside(exe: &str, dir: &str) -> bool {
     is_inside(norm(exe), norm(dir))
 }
 
+/// Una carpeta de riesgo con una sola componente (`C:\`, `C:`) abarcaría media unidad: se descarta.
+fn broad(dir: &str) -> bool {
+    norm(dir).split(['\\', '/']).filter(|c| !c.is_empty()).count() < 2
+}
+
 pub fn risky_place(exe: &str, p: &Places) -> Option<&'static str> {
+    let inside = |e: &str, d: &str| !broad(d) && inside(e, d);
     if p.temp.iter().any(|t| inside(exe, t)) {
         Some("una carpeta temporal")
     } else if inside(exe, &p.downloads) {
@@ -132,15 +138,12 @@ pub fn process_finding(exe: &str, signed: bool, p: &Places) -> Option<Finding> {
     })
 }
 
+/// `signer: None` significa solo «verificado sin firma» (R16): si no se pudo comprobar, no se llama.
 pub fn service_finding(name: &str, exe: &str, signer: Option<&str>) -> Option<Finding> {
-    if signer.is_some_and(|s| s.starts_with("Microsoft")) {
-        return None;
+    if signer.is_some() {
+        return None; // con firma (de Microsoft o de otro) no hay hallazgo
     }
-    let why = match signer {
-        Some(s) => format!("Es un servicio de {s}. Revisa que lo reconozcas."),
-        None => "Es un servicio sin firma digital. Revisa que lo reconozcas.".into(),
-    };
-    // ponytail: con firmante que no es Microsoft también sale como Review; afinar si da ruido.
+    let why = "Es un servicio sin firma digital. Revisa que lo reconozcas.".to_string();
     Some(Finding {
         level: Level::Review,
         title: name.to_string(),
@@ -192,6 +195,9 @@ pub fn hosts_entries(text: &str) -> Vec<(String, String)> {
         let line = line.split('#').next().unwrap_or("");
         let mut t = line.split_whitespace();
         let Some(ip) = t.next() else { continue };
+        if ip.split('%').next().unwrap_or("").parse::<std::net::IpAddr>().is_err() {
+            continue;
+        }
         for host in t {
             if host.eq_ignore_ascii_case("localhost") && (ip == "127.0.0.1" || ip == "::1") {
                 continue;
@@ -211,7 +217,10 @@ pub fn hosts_finding(entries: &[(String, String)]) -> Option<Finding> {
         level: Level::Review,
         title: "Archivo hosts modificado".into(),
         path,
-        why: format!("El archivo hosts tiene {} entradas añadidas", entries.len()),
+        why: match entries.len() {
+            1 => "El archivo hosts tiene 1 entrada añadida".to_string(),
+            n => format!("El archivo hosts tiene {n} entradas añadidas"),
+        },
         actions: vec![Action::OpenHosts],
     })
 }
@@ -240,7 +249,7 @@ pub fn proxy_finding(enable: Option<u32>, server: Option<&str>, autoconfig: Opti
 /// nombre de usuario.
 pub fn search_url(file_name: &str) -> String {
     let mut s = String::from("https://www.bing.com/search?q=");
-    for b in file_name.bytes() {
+    for b in self::file_name(file_name).bytes() {
         if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
             s.push(b as char);
         } else {
@@ -288,6 +297,9 @@ mod tests {
     fn empty_places_never_match() {
         assert_eq!(risky_place(r"C:\x.exe", &Places::default()), None);
         assert_eq!(risky_place("basura", &places()), None);
+        let mut p = places();
+        p.temp = vec![r"C:\".into(), "C:".into()];
+        assert_eq!(risky_place(r"C:\Program Files\A\a.exe", &p), None);
     }
 
     #[test]
@@ -319,6 +331,7 @@ mod tests {
     #[test]
     fn microsoft_service_is_ignored() {
         assert!(service_finding("S", r"C:\x.exe", Some("Microsoft Windows")).is_none());
+        assert!(service_finding("S", r"C:\x.exe", Some("NVIDIA Corporation")).is_none());
         assert_eq!(service_finding("S", r"C:\x.exe", None).unwrap().level, Level::Review);
     }
 
@@ -359,6 +372,9 @@ mod tests {
             e,
             vec![("0.0.0.0".into(), "ads.ejemplo.com".into()), ("0.0.0.0".into(), "tracker.ejemplo.net".into())]
         );
+        assert!(hosts_entries("hola mundo\n").is_empty());
+        assert_eq!(hosts_entries("fe80::1%lo0 x.local").len(), 1);
+        assert_eq!(hosts_finding(&e[..1]).unwrap().why, "El archivo hosts tiene 1 entrada añadida");
         let f = hosts_finding(&e).unwrap();
         assert_eq!(f.why, "El archivo hosts tiene 2 entradas añadidas");
         assert_eq!(f.path, "0.0.0.0 ads.ejemplo.com · 0.0.0.0 tracker.ejemplo.net");
@@ -366,15 +382,16 @@ mod tests {
 
     #[test]
     fn proxy_rules() {
-        assert!(proxy_finding(Some(1), Some("1.2.3.4:8080"), None).is_some());
+        assert_eq!(proxy_finding(Some(1), Some("1.2.3.4:8080"), None).unwrap().level, Level::Review);
         assert!(proxy_finding(Some(0), Some("x"), None).is_none());
-        assert!(proxy_finding(None, None, Some("http://wpad/x.pac")).is_some());
+        assert_eq!(proxy_finding(None, None, Some("http://wpad/x.pac")).unwrap().level, Level::Review);
         assert!(proxy_finding(Some(1), Some(""), None).is_none());
     }
 
     #[test]
     fn search_url_encodes_only_name() {
         assert_eq!(search_url("juego crack.exe"), "https://www.bing.com/search?q=juego%20crack.exe");
+        assert_eq!(search_url("C:\\Users\\ana\\x.exe"), "https://www.bing.com/search?q=x.exe");
         assert_eq!(search_url("ñ"), "https://www.bing.com/search?q=%C3%B1");
     }
 }
