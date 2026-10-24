@@ -283,9 +283,21 @@ fn here(st: &State) -> Option<At> {
     st.trees.get(&st.root).map(|t| (st.root.clone(), t.1))
 }
 
-/// Se ve la pestaña Carpetas: solo entonces se repinta al terminar un borrado.
-fn folders_visible(app: &AppWindow) -> bool {
-    app.global::<SpaceData>().get_tab() == 0
+/// Repinta Carpetas, solo si se ve, según su fase: las unidades se vuelven a leer y la carpeta
+/// se rehace. Mientras se analiza no se toca nada (el análisis sigue en marcha).
+fn repaint(app: &AppWindow) {
+    let data = app.global::<SpaceData>();
+    if data.get_tab() != 0 {
+        return;
+    }
+    match data.get_phase() {
+        0 => units(app),
+        2 => {
+            units(app);
+            show(app);
+        }
+        _ => {}
+    }
 }
 
 /// El análisis (y su árbol) en el que está `p`, si alguna unidad analizada lo tiene.
@@ -704,10 +716,7 @@ impl Space {
         });
         set_note(app, outcome_text(&outcome, purge), undo, retry && !outcome.failed.is_empty());
         app.set_locked(false);
-        if folders_visible(app) {
-            units(app);
-            show(app);
-        }
+        repaint(app);
     }
 
     /// «Deshacer»: devuelve lo enviado a la papelera, en un hilo.
@@ -746,23 +755,13 @@ impl Space {
         };
         set_note(app, undo_text(&names, &failed), false, false);
         app.set_locked(false);
-        if folders_visible(app) {
-            units(app);
-            show(app);
-        }
+        repaint(app);
     }
 
     /// Se vuelve a la pestaña Carpetas: se repinta lo que se veía (un borrado desde otra pestaña
     /// puede haber cambiado tamaños y espacio libre). Mientras se analiza no hay nada que repintar.
     pub(super) fn shown(&self) {
-        self.with(|app| match app.global::<SpaceData>().get_phase() {
-            0 => units(app),
-            2 => {
-                units(app);
-                show(app);
-            }
-            _ => {}
-        });
+        self.with(repaint);
     }
 
     /// Las zonas protegidas; `None` si no se pudieron leer (entonces no se borra nada).
