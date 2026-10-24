@@ -8,6 +8,7 @@ fn main() {
     }
     slint_build::compile_with_config("ui/app.slint", config()).unwrap();
     if windows {
+        println!("cargo:rerun-if-changed=wincleaner.ico");
         embed_resource::compile("wincleaner.rc", embed_resource::NONE)
             .manifest_required()
             .unwrap();

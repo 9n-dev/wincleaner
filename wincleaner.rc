@@ -1,2 +1,8 @@
 #define RT_MANIFEST 24
+// El primer ICON es el que muestra el Explorador. Se genera desde `docs/icono/`
+// (`tile16.svg` solo para 16 px, que con el trazo fino no se lee):
+//   for s in 24 32 48 256; do rsvg-convert -w $s -h $s docs/icono/tile.svg -o t$s.png; done
+//   rsvg-convert -w 16 -h 16 docs/icono/tile16.svg -o t16.png
+//   magick t16.png t24.png t32.png t48.png t256.png wincleaner.ico
+1 ICON "wincleaner.ico"
 1 RT_MANIFEST "wincleaner.exe.manifest"
