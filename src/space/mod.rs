@@ -4,6 +4,7 @@ pub mod recycle;
 pub mod parse;
 pub mod games;
 pub mod dups;
+pub mod installers;
 
 use tree::{Kind, Node};
 use zones::Block;

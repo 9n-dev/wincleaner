@@ -3,6 +3,7 @@
 mod clean;
 mod dups;
 mod games;
+mod installers;
 mod procs;
 mod programs;
 mod security;
@@ -57,10 +58,12 @@ pub fn run() {
     let space = space::Space::new(&app);
     let games = games::Games::new(&app, programs, space.clone());
     let _dups = dups::Dups::new(&app, space.clone());
+    let installers = installers::Installers::new(&app, space.clone());
     // Slint admite un solo manejador por callback: aquí se reparte a cada pestaña de Espacio.
     app.global::<SpaceData>().on_tab_shown(move |i| match i {
         0 => space.shown(),
         1 => games.load(),
+        3 => installers.load(),
         _ => {}
     });
     procs::Procs::new(&app);

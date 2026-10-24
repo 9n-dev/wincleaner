@@ -1,0 +1,118 @@
+// Pestaña Instaladores viejos de Espacio: la lista con sus casillas. Todo llega por
+// `InstallersData`; el botón de la cabecera y el estado vacío van en `SpacePage`.
+import { Palette, Type } from "../theme.slint";
+import { Check, Pill, Tile, Tone } from "../widgets.slint";
+import { ListBox } from "clean.slint";
+
+export struct InstallerRow {
+    name: string,
+    // «Descargas · hace 7 meses · ya instalado»
+    sub: string,
+    // «4,1 MB»
+    size: string,
+    checked: bool,
+    // En una zona protegida: sin casilla, con la pastilla «Protegida».
+    protected: bool,
+}
+
+export global InstallersData {
+    // 0 cargando, 1 lista.
+    in property <int> phase;
+    in property <[InstallerRow]> rows;
+    // «Enviar 5 a la papelera · 6,0 GB»
+    in property <string> send-text;
+    in property <bool> can-send;
+    callback toggle(int);
+    callback send();
+}
+
+component InstallerItem {
+    in property <InstallerRow> item;
+    in property <bool> first;
+    callback toggled();
+    height: 61px;
+    accessible-role: list-item;
+    accessible-label: root.item.name + ", " + root.item.size;
+
+    if !root.first: Rectangle {
+        y: 0;
+        height: 1px;
+        background: Palette.line;
+    }
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        spacing: 14px;
+
+        VerticalLayout {
+            alignment: center;
+            width: 18px;
+            if !root.item.protected: Check {
+                checked: root.item.checked;
+                accessible-label: root.item.name;
+                toggled => { root.toggled(); }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            Tile {
+                icon: "box";
+                tint: Palette.mu;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+
+            Text {
+                text: root.item.name;
+                color: Palette.tx;
+                font-weight: 500;
+                overflow: elide;
+            }
+            Text {
+                text: root.item.sub;
+                color: Palette.fa;
+                font-size: Type.label;
+                overflow: elide;
+            }
+        }
+        if root.item.protected: VerticalLayout {
+            alignment: center;
+            Pill {
+                text: "Protegida";
+                icon: "lock";
+                kind: Tone.neutral;
+            }
+        }
+        Text {
+            width: 80px;
+            text: root.item.size;
+            color: Palette.tx;
+            font-weight: 600;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// Crece hasta su contenido y, si no cabe, se desplaza por dentro.
+export component InstallerList inherits ListBox {
+    preferred-height: InstallersData.rows.length * 61px;
+    min-height: 100px;
+
+    Flickable {
+        vertical-stretch: 1;
+        content-width: self.width;
+        content-height: list.preferred-height;
+
+        list := VerticalLayout {
+            width: parent.width;
+            for row[i] in InstallersData.rows: InstallerItem {
+                item: row;
+                first: i == 0;
+                toggled => { InstallersData.toggle(i); }
+            }
+        }
+    }
+}

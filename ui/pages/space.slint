@@ -1,10 +1,11 @@
 // Sección Espacio: pestañas, aviso de resultado y Carpetas (unidades → analizando → carpeta).
 // Todo llega por `SpaceData`.
 import { Palette, Type, Icon } from "../theme.slint";
-import { Button, ButtonKind, Note, Pill, Seg, Bar, EmptyState, Tone } from "../widgets.slint";
+import { Button, ButtonKind, Note, Pill, Seg, Bar, EmptyState, Tone, Tile } from "../widgets.slint";
 import { Head, ListBox } from "clean.slint";
 import { GamesData, GameList } from "games.slint";
 import { DupsData, DupsText, DupsChoose, DupsSearching, DupsToolbar, DupsList } from "dups.slint";
+import { InstallersData, InstallerList } from "installers.slint";
 
 export struct DriveItem {
     // «C:»
@@ -94,23 +95,6 @@ global Strip {
     pure public function color(c: int, rest: color) -> color {
         return c == 0 ? Palette.info : c == 1 ? Palette.pur : c == 2 ? Palette.ac
             : c == 3 ? Palette.warn : c == 4 ? Palette.ac2 : rest;
-    }
-}
-
-// Baldosa de 30 px con el icono.
-component Tile inherits Rectangle {
-    in property <string> icon;
-    in property <color> tint;
-    width: 30px;
-    height: 30px;
-    border-radius: 8px;
-    background: Palette.s2;
-
-    Icon {
-        x: 7px;
-        y: 7px;
-        name: root.icon;
-        color: root.tint;
     }
 }
 
@@ -366,6 +350,8 @@ export component SpacePage inherits Rectangle {
     property <bool> dup-list: root.dups && DupsData.phase == 2 && DupsData.groups.length > 0;
     // Con otro tipo elegido, el filtro sigue a la vista aunque no haya grupos de ese tipo.
     property <bool> dup-results: root.dups && DupsData.phase == 2 && (DupsData.groups.length > 0 || DupsData.kind != 0);
+    property <bool> installers: SpaceData.tab == 3;
+    property <bool> installer-list: root.installers && InstallersData.phase == 1 && InstallersData.rows.length > 0;
     property <int> phase: SpaceData.phase;
     property <bool> lock: SpaceData.lock-title != "";
 
@@ -381,7 +367,9 @@ export component SpacePage inherits Rectangle {
         Head {
             vertical-stretch: 0;
             title: "Espacio";
-            text: root.games ? GamesData.subtitle : root.dups ? DupsData.subtitle : SpaceData.subtitle;
+            text: root.games ? GamesData.subtitle : root.dups ? DupsData.subtitle
+                : root.installers ? "Instaladores e imágenes de disco de más de 30 días en Descargas y Escritorio"
+                : SpaceData.subtitle;
 
             if root.folders && root.phase != 0: Button {
                 text: root.phase == 1 ? "Detener" : "Volver a analizar";
@@ -408,6 +396,13 @@ export component SpacePage inherits Rectangle {
                         else { DupsData.again(); }
                     }
                 }
+            }
+            if root.installer-list: Button {
+                text: InstallersData.send-text;
+                icon: "trash";
+                kind: ButtonKind.primary;
+                enabled: InstallersData.can-send;
+                clicked => { InstallersData.send(); }
             }
         }
 
@@ -611,22 +606,24 @@ export component SpacePage inherits Rectangle {
         if root.dups && DupsData.phase == 1: DupsSearching { vertical-stretch: 0; }
         if root.dup-results: DupsToolbar { vertical-stretch: 0; }
         if root.dup-list: DupsList { compact: root.compact; }
-        // Un solo estado vacío para todo: otras pestañas, unidades, analizando, carpeta vacía, sin juegos y sin duplicados.
-        if !root.game-list && !root.dup-card && !root.dup-list && (!root.folders || root.phase != 2 || SpaceData.rows.length == 0): EmptyState {
+        if root.installer-list: InstallerList { }
+        // Un solo estado vacío para todo: unidades, analizando, carpeta vacía, sin juegos, sin duplicados y sin instaladores.
+        if !root.game-list && !root.dup-card && !root.dup-list && !root.installer-list && (!root.folders || root.phase != 2 || SpaceData.rows.length == 0): EmptyState {
             preferred-height: 100000px;
             min-height: 120px;
-            // Instaladores viejos llega en su tarea.
             icon: !root.folders ? (root.games ? "game" : root.dups ? "copy" : "box")
                 : root.phase == 0 ? "disk" : root.phase == 2 ? "folder" : "";
             title: root.games ? (GamesData.phase == 0 ? "" : "No hay juegos instalados")
                 : root.dups ? "No hay archivos duplicados"
-                : !root.folders ? "Todavía no está disponible"
+                : root.installers ? (InstallersData.phase == 0 ? "" : "No hay instaladores viejos")
                 : root.phase == 0 ? (SpaceData.drives.length > 0 ? "Elige una unidad para ver qué ocupa" : "No hay unidades")
                 : root.phase == 2 ? "Esta carpeta está vacía" : "";
             text: root.games ? (GamesData.phase == 0 ? "Los juegos aparecerán en cuanto termine."
                 : "WinCleaner reconoce Steam, Epic Games, GOG, Xbox, Battle.net, EA app y Ubisoft Connect.")
                 : root.dups ? "Con los filtros actuales (" + DupsText.kinds[DupsData.kind] + ", desde "
                     + DupsText.mins[DupsData.min] + "). Prueba a buscar en más sitios."
+                : root.installers ? (InstallersData.phase == 0 ? "Los instaladores aparecerán en cuanto termine."
+                    : "Buscamos .exe, .msi, .msix e .iso de más de 30 días.")
                 : !root.folders || root.phase == 2 ? ""
                 : root.phase == 1 ? "Las carpetas aparecerán en cuanto termine."
                 : SpaceData.drives.length > 0 ? "En un disco grande tarda unos minutos. Puedes seguir usando el equipo."

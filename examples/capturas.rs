@@ -408,6 +408,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             guarda(&format!("wces-{nombre}{suffix}"), &headless::render(app.window(), w, h), w, h)?;
         }
     }
+
+    // Instaladores viejos, con los datos de `INST` de las maquetas: lista y vacío.
+    use wincleaner::ui::{InstallerRow, InstallersData};
+    let inst = app.global::<InstallersData>();
+    data.set_tab(3);
+    inst.set_phase(1);
+    let filas = [
+        ("Win11_24H2_Spanish_x64.iso", "Descargas · hace 11 meses", "5,8 GB", true),
+        ("VisualStudioSetup.exe", "Descargas · hace 7 meses · ya instalado", "4,1 MB", true),
+        ("OBS-Studio-30.2-Windows-Installer.exe", "Descargas · hace 5 meses · ya instalado", "128 MB", true),
+        ("python-3.12.6-amd64.exe", "Escritorio · hace 2 meses · ya instalado", "25 MB", true),
+        ("SteamSetup.exe", "Descargas · hace 1 año · ya instalado", "2,3 MB", true),
+        ("NVIDIA_app_v11.0.exe", "Descargas · hace 1 mes", "148 MB", false),
+    ]
+    .map(|(n, d, s, c)| InstallerRow { name: n.into(), sub: d.into(), size: s.into(), checked: c, protected: false });
+    inst.set_send_text("Enviar 5 a la papelera · 6,0 GB".into());
+    inst.set_can_send(true);
+    for (nombre, rows) in [("instaladores", filas.to_vec()), ("instaladores-vacio", Vec::new())] {
+        inst.set_rows(model(rows));
+        for (suffix, w, h) in [("", 1100, 720), ("-min", 880, 600)] {
+            guarda(&format!("wces-{nombre}{suffix}"), &headless::render(app.window(), w, h), w, h)?;
+        }
+    }
     data.set_tab(0);
 
     // Programas, con los datos de `PROGS` de las maquetas.
