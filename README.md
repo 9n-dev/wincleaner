@@ -65,7 +65,7 @@ Solo se borra el contenido de esas carpetas, nunca la carpeta raíz. Las cookies
 
 ## 🚀 Uso
 
-1. [Compílalo](#-compilar): todavía no hay versiones publicadas para descargar.
+1. Descarga `wincleaner.exe` de [Releases](https://github.com/9n-dev/wincleaner/releases) (o [compílalo](#-compilar)). Puedes comprobarlo con la SHA-256 que va al lado: en PowerShell, `Get-FileHash .\wincleaner.exe`.
 2. Ejecuta `wincleaner.exe`, sin instalar nada. Arranca sin permisos de administrador. Como el `.exe` no está firmado, SmartScreen puede avisar de que es una aplicación desconocida («Más información» → «Ejecutar de todas formas»).
 3. Las categorías que lo necesitan (Temporales de Windows y Windows Update) salen desactivadas. Pulsa «Reiniciar como administrador» para activarlas.
 
