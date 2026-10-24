@@ -33,6 +33,11 @@ pub fn is_valid(p: &str) -> bool {
     parse(p).is_some()
 }
 
+/// Las dos rutas son válidas e iguales (sin mayúsculas ni separadores).
+pub fn same(a: &str, b: &str) -> bool {
+    matches!((parse(a), parse(b)), (Some(x), Some(y)) if x == y)
+}
+
 /// `path` es descendiente estricto de `root`.
 pub fn is_inside(path: &str, root: &str) -> bool {
     match (parse(path), parse(root)) {
@@ -72,6 +77,13 @@ pub fn temp_name_ok(root: &str) -> bool {
 mod tests {
     use super::*;
     const T: &str = r"C:\Users\M\AppData\Local\Temp";
+
+    #[test]
+    fn same_rules() {
+        assert!(same(r"C:\Users\A", "c:/users/a/"));
+        assert!(!same(r"C:\a", r"C:\a\b"));
+        assert!(!same(r"C:\a\..\a", r"C:\a"));
+    }
 
     #[test]
     fn inside_basic() {
