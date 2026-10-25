@@ -55,7 +55,7 @@ export component Icon {
         stroke-line-join: round;
         commands:
             root.name == "home" ? "M3 11l9-7 9 7M5 10v10h14V10"
-            : root.name == "broom" ? "M14 4l6 6M17 7l-6 6M11 13c-3-1-6 1-7 7 6-1 8-4 7-7z"
+            : root.name == "broom" ? "M18 3l-6 9M8 11h7l2.5 9h-12zM9 15v5M12 15v5M15 15v5"
             : root.name == "chart" ? "M4 20V10M10 20V4M16 20v-7M21 20H3"
             : root.name == "apps" ? "M5.5 4h4a1.5 1.5 0 0 1 1.5 1.5v4a1.5 1.5 0 0 1 -1.5 1.5h-4a1.5 1.5 0 0 1 -1.5 -1.5v-4a1.5 1.5 0 0 1 1.5 -1.5zM14.5 4h4a1.5 1.5 0 0 1 1.5 1.5v4a1.5 1.5 0 0 1 -1.5 1.5h-4a1.5 1.5 0 0 1 -1.5 -1.5v-4a1.5 1.5 0 0 1 1.5 -1.5zM5.5 13h4a1.5 1.5 0 0 1 1.5 1.5v4a1.5 1.5 0 0 1 -1.5 1.5h-4a1.5 1.5 0 0 1 -1.5 -1.5v-4a1.5 1.5 0 0 1 1.5 -1.5zM14.5 13h4a1.5 1.5 0 0 1 1.5 1.5v4a1.5 1.5 0 0 1 -1.5 1.5h-4a1.5 1.5 0 0 1 -1.5 -1.5v-4a1.5 1.5 0 0 1 1.5 -1.5z"
             : root.name == "pulse" ? "M3 12h4l3-7 4 14 3-7h4"
@@ -73,5 +73,55 @@ export component Icon {
             : root.name == "ext" ? "M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"
             : root.name == "refresh" ? "M20 11a8 8 0 1 0-2 6M20 5v6h-6"
             : "";
+    }
+}
+
+// Baldosa del icono del .exe (`docs/icono/tile.svg`), sin su margen de 2 unidades.
+// El trazo de `Path` va en píxeles y no escala con el `viewbox`: se escala con `size`.
+export component Logo inherits Rectangle {
+    in property <length> size: 24px;
+    width: root.size;
+    height: root.size;
+    border-radius: root.size * 15 / 60;
+    background: Palette.ac;
+
+    Path {
+        width: root.size;
+        height: root.size;
+        viewbox-x: 2;
+        viewbox-y: 2;
+        viewbox-width: 60;
+        viewbox-height: 60;
+        stroke: Palette.on;
+        stroke-width: root.size * 5 / 60;
+        stroke-line-cap: round;
+        commands: "M44 12L30 34";
+    }
+
+    Path {
+        width: root.size;
+        height: root.size;
+        viewbox-x: 2;
+        viewbox-y: 2;
+        viewbox-width: 60;
+        viewbox-height: 60;
+        fill: Palette.on;
+        stroke: Palette.on;
+        stroke-width: root.size * 3 / 60;
+        stroke-line-join: round;
+        commands: "M22 32h16l6 18H16z";
+    }
+
+    Path {
+        width: root.size;
+        height: root.size;
+        viewbox-x: 2;
+        viewbox-y: 2;
+        viewbox-width: 60;
+        viewbox-height: 60;
+        stroke: Palette.s1;
+        stroke-width: root.size * 2 / 60;
+        stroke-line-cap: round;
+        commands: "M22 42v8M28 42v8M34 42v8M40 42v8";
     }
 }

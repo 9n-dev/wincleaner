@@ -1,4 +1,4 @@
-import { Palette, Type, Icon } from "theme.slint";
+import { Palette, Type, Icon, Logo } from "theme.slint";
 import { Button, ConfirmModal, Modal, ModalLine } from "widgets.slint";
 import { SummaryPage, SummaryData, DriveRow } from "pages/summary.slint";
 import { AnalyzePage, AnalyzeData, DirRow } from "pages/analyze.slint";
@@ -271,19 +271,7 @@ export component AppWindow inherits Window {
                     spacing: 10px;
                     alignment: root.compact ? center : start;
 
-                    Rectangle {
-                        width: 24px;
-                        height: 24px;
-                        border-radius: 7px;
-                        background: Palette.ac;
-
-                        Icon {
-                            name: "broom";
-                            size: 15px;
-                            stroke-width: 2.2px;
-                            color: Palette.on;
-                        }
-                    }
+                    Logo { }
 
                     if !root.compact: Text {
                         text: "WinCleaner";

@@ -8,7 +8,7 @@ rust-version = "1.92"
 slint = { version = "=1.18.1", default-features = false, features = ["std", "compat-1-2", "renderer-software", "software-renderer-systemfonts", "software-renderer-path"] }
 
 [target.'cfg(windows)'.dependencies]
-slint = { version = "=1.18.1", default-features = false, features = ["backend-winit", "accessibility"] }
+slint = { version = "=1.18.1", default-features = false, features = ["backend-winit", "accessibility", "unstable-winit-030"] }
 winapi = { version = "0.3", features = ["shellapi", "shlobj", "knownfolders", "combaseapi", "objbase", "fileapi", "minwinbase", "winbase", "winnt", "winuser", "shtypes", "winerror", "winreg", "wingdi", "processenv", "jobapi2", "processthreadsapi", "synchapi", "handleapi", "tlhelp32", "psapi", "winver", "wintrust", "softpub", "mscat", "wincrypt", "sysinfoapi", "shobjidl_core", "objidl", "wbemcli", "oleauto", "oaidl", "winsvc", "taskschd"] }
 
 [dev-dependencies]

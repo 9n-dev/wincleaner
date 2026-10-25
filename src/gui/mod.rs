@@ -13,6 +13,19 @@ use wincleaner::ui::{self, AppWindow, Nav};
 use crate::win;
 
 pub fn run() {
+    // El icono del .exe (recurso 1 de `wincleaner.rc`) también en la ventana y la barra de tareas.
+    let _ = slint::BackendSelector::new()
+        .with_winit_window_attributes_hook(|attrs| {
+            use slint::winit_030::winit::dpi::PhysicalSize;
+            use slint::winit_030::winit::platform::windows::{IconExtWindows, WindowAttributesExtWindows};
+            use slint::winit_030::winit::window::Icon;
+            use winapi::um::winuser::{GetSystemMetrics, SM_CXSMICON};
+            let small = unsafe { GetSystemMetrics(SM_CXSMICON) }.max(16) as u32;
+            attrs
+                .with_window_icon(Icon::from_resource(1, Some(PhysicalSize::new(small, small))).ok())
+                .with_taskbar_icon(Icon::from_resource(1, None).ok())
+        })
+        .select();
     let Ok(app) = AppWindow::new() else { return };
     app.set_admin(win::is_admin());
     app.set_version(env!("CARGO_PKG_VERSION").into());
