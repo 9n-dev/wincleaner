@@ -171,7 +171,7 @@ fn session(pid: u32) -> Option<u32> {
 
 /// Termina los `pids` que siguen siendo `expected_exe` y son de la sesión de WinCleaner (los de
 /// otro usuario no se tocan, ni siquiera como administrador). Cada uno se vuelve a mirar justo
-/// antes: si ya no existe o es otro programa (PID reutilizado), cuenta como cerrado. La ruta se lee
+/// antes: si ya no existe o es otro programa (PID reutilizado), no se cuenta. La ruta se lee
 /// otra vez con el mismo handle con el que se termina, para que entre medias no lo pueda ocupar
 /// otro. Sigue con los demás aunque uno falle; el resultado, según `procs::kill_result`.
 pub fn terminate(pids: &[u32], expected_exe: &str) -> Result<(), TermError> {
@@ -183,11 +183,11 @@ pub fn terminate(pids: &[u32], expected_exe: &str) -> Result<(), TermError> {
         if pid == me {
             continue;
         }
-        total += 1;
+        // Ya no está o es otro programa: no cuenta en el aviso de «se cerraron N de M».
         if procs::kill_target(expected_exe, exe_of(pid).as_deref()) != KillTarget::Kill {
-            closed += 1;
             continue;
         }
+        total += 1;
         if !procs::same_session(session(pid), own) {
             continue;
         }
