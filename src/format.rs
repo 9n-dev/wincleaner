@@ -5,7 +5,8 @@ pub fn bytes(n: u64) -> String {
     }
     let mut v = n as f64;
     let mut unidad = 0;
-    while v >= 1024.0 && unidad < 4 {
+    // Desde 1023,5 se redondearía a «1024 KB»: mejor «1 MB».
+    while v >= 1023.5 && unidad < 4 {
         v /= 1024.0;
         unidad += 1;
     }
@@ -107,11 +108,13 @@ mod tests {
 
     #[test]
     fn bytes_examples() {
-        let casos: [(u64, &str); 9] = [
+        let casos: [(u64, &str); 11] = [
             (0, "0 B"),
             (512, "512 B"),
             (1536, "1,5 KB"),
             (12 * 1024, "12 KB"),
+            (1023 * 1024, "1023 KB"),
+            (1024 * 1024 - 1, "1 MB"),
             (640 * 1024 * 1024, "640 MB"),
             (1932735283, "1,8 GB"),
             (22977575731, "21,4 GB"),

@@ -51,6 +51,9 @@ pub struct Category {
     pub filter: Filter,
     pub roots: Vec<PathBuf>,
     pub status: Status,
+    /// Las listas de `Env`, para volver a validar la raíz resuelta justo antes de borrar.
+    pub protected: Vec<String>,
+    pub forbidden_trees: Vec<String>,
 }
 
 /// Enlace simbólico o, en Windows, cualquier punto de reanálisis (junction...).
@@ -162,7 +165,8 @@ pub fn build_categories(env: &Env) -> Vec<Category> {
                 };
                 (safe, status)
             };
-            Category { id, name, filter, roots, status }
+            let (protected, forbidden_trees) = (env.protected.clone(), env.forbidden_trees.clone());
+            Category { id, name, filter, roots, status, protected, forbidden_trees }
         })
         .collect()
 }

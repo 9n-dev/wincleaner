@@ -90,8 +90,8 @@ pub fn same_session(pid_session: Option<u32>, own: Option<u32>) -> bool {
     matches!((pid_session, own), (Some(a), Some(b)) if a == b)
 }
 
-/// Cómo acaba terminar un grupo de `total` procesos, de los que se cerraron (o ya no estaban)
-/// `closed`; `first` es el primer error. Si no se cerró ninguno y no hubo error (todos eran de
+/// Cómo acaba terminar un grupo de `total` procesos (los que seguían abiertos), de los que se
+/// cerraron `closed`; `first` es el primer error. Si no se cerró ninguno y no hubo error (todos eran de
 /// otra sesión), también es `Partial`.
 pub fn kill_result(closed: usize, total: usize, first: Option<TermError>) -> Result<(), TermError> {
     match first {

@@ -1,7 +1,7 @@
 //! Escaneo y borrado seguros: nunca se siguen enlaces y todo error de E/S cuenta como «saltado».
 
 use crate::categories::{is_link, Category, Filter, Status};
-use crate::paths::is_inside;
+use crate::paths::{is_inside, root_is_safe};
 use std::fs::Metadata;
 #[cfg(not(windows))]
 use std::io::ErrorKind;
@@ -81,15 +81,26 @@ pub fn scan(cat: &Category, now: SystemTime) -> ScanResult {
     out
 }
 
-pub fn delete(cat: &Category, scan: &ScanResult, now: SystemTime) -> DeleteReport {
+/// La raíz, con los enlaces de las carpetas de encima ya resueltos, sigue siendo segura: un
+/// junction en `AppData` podría llevar `…\AppData\Local\Temp` dentro de Documentos.
+fn resolved_root_safe(root: &Path, cat: &Category) -> bool {
     #[cfg(windows)]
-    let finals = handle::final_roots(&cat.roots);
+    let resolved = handle::final_path_of(root);
+    #[cfg(not(windows))]
+    let resolved = std::fs::canonicalize(root).ok().and_then(|p| p.to_str().map(str::to_owned));
+    resolved.is_some_and(|r| root_is_safe(&r, &cat.protected, &cat.forbidden_trees))
+}
+
+pub fn delete(cat: &Category, scan: &ScanResult, now: SystemTime) -> DeleteReport {
+    let roots: Vec<PathBuf> = cat.roots.iter().filter(|r| resolved_root_safe(r, cat)).cloned().collect();
+    #[cfg(windows)]
+    let finals = handle::final_roots(&roots);
     let mut rep = DeleteReport::default();
     for (path, size) in &scan.files {
         #[cfg(windows)]
-        let freed = handle::try_delete(&cat.roots, cat.filter, path, now, &finals);
+        let freed = handle::try_delete(&roots, cat.filter, path, now, &finals);
         #[cfg(not(windows))]
-        let freed = try_delete(&cat.roots, cat.filter, path, now);
+        let freed = try_delete(&roots, cat.filter, path, now);
         match freed {
             Ok(Some(n)) => {
                 rep.freed += n;
@@ -104,9 +115,9 @@ pub fn delete(cat: &Category, scan: &ScanResult, now: SystemTime) -> DeleteRepor
     }
     for dir in &scan.dirs {
         #[cfg(windows)]
-        handle::remove_dir(dir, &cat.roots, &finals);
+        handle::remove_dir(dir, &roots, &finals);
         #[cfg(not(windows))]
-        remove_dir(dir, &cat.roots);
+        remove_dir(dir, &roots);
     }
     rep
 }
@@ -404,7 +415,8 @@ mod tests {
     use std::path::Path;
 
     fn cat(root: &Path, filter: Filter, status: Status) -> Category {
-        Category { id: CategoryId::UserTemp, name: "t", filter, roots: vec![root.to_path_buf()], status }
+        let (protected, forbidden_trees) = (Vec::new(), Vec::new());
+        Category { id: CategoryId::UserTemp, name: "t", filter, roots: vec![root.to_path_buf()], status, protected, forbidden_trees }
     }
     fn ready(root: &Path, filter: Filter) -> Category {
         cat(root, filter, Status::Ready)
@@ -486,6 +498,31 @@ mod tests {
         assert!(fuera.join("importante.txt").exists());
         assert!(fs::symlink_metadata(root.join("enlace")).is_ok());
         assert!(fs::symlink_metadata(root.join("enlace_archivo")).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn delete_rechecks_root_resolved_through_link_above_it() {
+        let u = fs::canonicalize(temp_dir("link_above")).unwrap().join("U");
+        let docs = u.join("Documents");
+        let s = |p: &Path| p.to_str().unwrap().to_string();
+        let guarded = |root: &Path| Category {
+            protected: vec![s(&u)],
+            forbidden_trees: vec![s(&docs)],
+            ..ready(root, Filter::All)
+        };
+        // Sin enlace: se borra con normalidad.
+        let real = u.join("Real/Local/Temp");
+        write(&real.join("a.tmp"), 5);
+        let c = guarded(&real);
+        assert_eq!(delete(&c, &scan(&c, future()), future()).deleted, 1);
+        // `AppData` cambiado por un enlace a Documentos tras validar la raíz.
+        write(&docs.join("x/Local/Temp/importante.txt"), 5);
+        std::os::unix::fs::symlink(docs.join("x"), u.join("AppData")).unwrap();
+        let c = guarded(&u.join("AppData/Local/Temp"));
+        let rep = delete(&c, &scan(&c, future()), future());
+        assert_eq!((rep.deleted, rep.skipped), (0, 1));
+        assert!(docs.join("x/Local/Temp/importante.txt").exists());
     }
 
     #[cfg(unix)]
