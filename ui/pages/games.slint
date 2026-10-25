@@ -1,0 +1,129 @@
+// Pestaña Juegos de Espacio: la lista y su botón «Desinstalar». Todo llega por `GamesData`.
+import { Palette, Type } from "../theme.slint";
+import { Button, AppIcon } from "../widgets.slint";
+import { ListBox } from "clean.slint";
+
+export struct GameRow {
+    name: string,
+    // «Steam · jugado hace 3 días», «Steam · nunca jugado» o el lanzador.
+    sub: string,
+    // «118 GB» o «—».
+    size: string,
+    letter: string,
+    tint: color,
+}
+
+export global GamesData {
+    // 0 cargando, 1 lista.
+    in property <int> phase;
+    // «6 juegos instalados · 382 GB en total» o «Ningún juego encontrado».
+    in property <string> subtitle: "Buscando juegos…";
+    in property <[GameRow]> rows;
+    in-out property <int> selected: -1;
+    callback uninstall(int);
+}
+
+component GameItem {
+    in property <GameRow> item;
+    in property <bool> selected;
+    in property <bool> first;
+    callback select();
+    callback uninstall();
+    height: 61px;
+    accessible-role: list-item;
+    accessible-label: root.item.name + ", " + root.item.size;
+    accessible-action-default => { root.select(); }
+
+    Rectangle {
+        background: root.selected ? Palette.s2 : touch.has-hover ? Palette.s2.with-alpha(0.5) : transparent;
+    }
+    if !root.first: Rectangle {
+        y: 0;
+        height: 1px;
+        background: Palette.line;
+    }
+    if root.selected: Rectangle {
+        x: 0;
+        width: 3px;
+        background: Palette.ac;
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.select(); }
+    }
+
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        spacing: 14px;
+
+        VerticalLayout {
+            alignment: center;
+            AppIcon {
+                letter: root.item.letter;
+                tint: root.item.tint;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+
+            Text {
+                text: root.item.name;
+                color: Palette.tx;
+                font-weight: 500;
+                overflow: elide;
+            }
+            Text {
+                text: root.item.sub;
+                color: Palette.fa;
+                font-size: Type.label;
+                overflow: elide;
+            }
+        }
+        Text {
+            width: 80px;
+            text: root.item.size;
+            color: Palette.tx;
+            font-weight: 600;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+        }
+        HorizontalLayout {
+            width: 130px;
+            alignment: end;
+
+            if root.selected: VerticalLayout {
+                alignment: center;
+                Button {
+                    text: "Desinstalar";
+                    clicked => { root.uninstall(); }
+                }
+            }
+        }
+    }
+}
+
+// Crece hasta su contenido y, si no cabe, se desplaza por dentro.
+export component GameList inherits ListBox {
+    preferred-height: GamesData.rows.length * 61px;
+    min-height: 100px;
+
+    Flickable {
+        vertical-stretch: 1;
+        content-width: self.width;
+        content-height: list.preferred-height;
+
+        list := VerticalLayout {
+            width: parent.width;
+            for row[i] in GamesData.rows: GameItem {
+                item: row;
+                first: i == 0;
+                selected: GamesData.selected == i;
+                select => { GamesData.selected = i; }
+                uninstall => { GamesData.uninstall(i); }
+            }
+        }
+    }
+}

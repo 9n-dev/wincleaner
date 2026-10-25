@@ -24,6 +24,7 @@ pub struct RawEntry {
     pub system_component: bool,
     pub parent_key_name: Option<String>,
     pub display_icon: Option<String>,
+    pub install_location: Option<String>,
 }
 
 /// Sin nombre, componente del sistema o parche/actualización de otro programa: no se muestra.

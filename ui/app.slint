@@ -1,13 +1,16 @@
 import { Palette, Type, Icon, Logo } from "theme.slint";
-import { Button, ConfirmModal, Modal, ModalLine } from "widgets.slint";
+import { Button, ConfirmModal, Modal, ModalLine, Purge, PurgeModal } from "widgets.slint";
 import { SummaryPage, SummaryData, DriveRow } from "pages/summary.slint";
-import { AnalyzePage, AnalyzeData, DirRow } from "pages/analyze.slint";
+import { SpacePage, SpaceData, DriveItem, StripPart, SpaceRow } from "pages/space.slint";
+import { GamesData, GameRow } from "pages/games.slint";
+import { DupsData, DupPlace, DupFileRow, DupGroupRow, DupStep } from "pages/dups.slint";
+import { InstallersData, InstallerRow } from "pages/installers.slint";
 import { ProgramsPage, ProgramsData, ProgramRow } from "pages/programs.slint";
 import { ProcsPage, ProcsData, ProcRow, StartRow } from "pages/procs.slint";
 import { SecurityPage, SecurityData, SecPhase, CheckRow, FindingRow } from "pages/security.slint";
 import { CleanPage, CleanData, CleanPhase, CatState, CategoryRow, ReportRow } from "pages/clean.slint";
 
-export { Modal, ModalLine, CleanData, CleanPhase, CatState, CategoryRow, ReportRow, AnalyzeData, DirRow, SummaryData, DriveRow, ProgramsData, ProgramRow, ProcsData, ProcRow, StartRow, SecurityData, SecPhase, CheckRow, FindingRow }
+export { Modal, ModalLine, Purge, CleanData, CleanPhase, CatState, CategoryRow, ReportRow, SpaceData, DriveItem, StripPart, SpaceRow, GamesData, GameRow, DupsData, DupPlace, DupFileRow, DupGroupRow, DupStep, InstallersData, InstallerRow, SummaryData, DriveRow, ProgramsData, ProgramRow, ProcsData, ProcRow, StartRow, SecurityData, SecPhase, CheckRow, FindingRow }
 
 // Estado de la barra lateral que rellena Rust.
 export global Nav {
@@ -216,7 +219,7 @@ export component AppWindow inherits Window {
     in-out property <bool> about-open;
     // Mientras se limpia, no se cambia de sección.
     in property <bool> locked;
-    // 0 Resumen, 1 Limpiar, 2 Analizar, 3 Programas, 4 Procesos, 5 Seguridad.
+    // 0 Resumen, 1 Limpiar, 2 Espacio, 3 Programas, 4 Procesos, 5 Seguridad.
     in-out property <int> section;
     property <bool> compact: root.width < 1000px;
 
@@ -292,7 +295,7 @@ export component AppWindow inherits Window {
             for item[i] in [
                 { icon: "home", label: "Resumen" },
                 { icon: "broom", label: "Limpiar" },
-                { icon: "chart", label: "Analizar" },
+                { icon: "disk", label: "Espacio" },
                 { icon: "apps", label: "Programas" },
                 { icon: "pulse", label: "Procesos" },
                 { icon: "shield", label: "Seguridad" },
@@ -395,10 +398,12 @@ export component AppWindow inherits Window {
             height: parent.height;
             compact: root.compact;
         }
-        if root.section == 2: AnalyzePage {
+        if root.section == 2: SpacePage {
             width: parent.width;
             height: parent.height;
             compact: root.compact;
+            admin: root.admin;
+            relaunch-admin => { Nav.relaunch-admin(); }
         }
         if root.section == 3: ProgramsPage {
             width: parent.width;
@@ -421,6 +426,12 @@ export component AppWindow inherits Window {
 
     // El modal va sobre todo.
     ConfirmModal {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+    }
+    PurgeModal {
         x: 0;
         y: 0;
         width: root.width;

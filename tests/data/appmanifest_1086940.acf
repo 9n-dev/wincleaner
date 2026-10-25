@@ -1,0 +1,24 @@
+"AppState"
+{
+	"appid"		"1086940"
+	"universe"		"1"
+	"name"		"Baldur's Gate 3"
+	"StateFlags"		"4"
+	"installdir"		"Baldurs Gate 3"
+	"LastUpdated"		"1729700000"
+	"LastPlayed"		"1729468800"
+	"SizeOnDisk"		"126726299419"
+	"buildid"		"15925447"
+	"InstalledDepots"
+	{
+		"1086941"
+		{
+			"manifest"		"5277178440451862473"
+			"size"		"126726299419"
+		}
+	}
+	"UserConfig"
+	{
+		"language"		"spanish"
+	}
+}

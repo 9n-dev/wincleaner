@@ -19,7 +19,7 @@ export component Muestra inherits Window {
         HorizontalLayout {
             spacing: 12px;
             Button { text: "Limpiar"; icon: "broom"; kind: ButtonKind.primary; clicked => { root.fondo(); } }
-            Button { text: "Analizar"; icon: "chart"; }
+            Button { text: "Analizar"; icon: "disk"; }
             Button { text: "Terminar"; icon: "stop"; kind: ButtonKind.danger; }
             Button { text: "Desactivado"; enabled: false; }
             Button { text: "Con foco"; init => { self.focus(); } clicked => { root.fondo(); } }

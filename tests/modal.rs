@@ -5,7 +5,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use slint::{ComponentHandle, SharedString};
-use wincleaner::ui::{AppWindow, Modal, headless};
+use wincleaner::ui::{AppWindow, Modal, Purge, headless};
 
 /// Abre el modal y devuelve (ventana, nº de confirmar, nº de cancelar).
 fn abierto() -> (AppWindow, Rc<Cell<u32>>, Rc<Cell<u32>>) {
@@ -95,7 +95,7 @@ fn tab_never_leaves_the_modal() {
 #[test]
 fn confirm_runs_its_action_once() {
     use wincleaner::ui::{Confirm, confirm, install_modal};
-    let ask = || Confirm { title: "¿Borrar?", text: "", lines: vec![], note: "", confirm_text: "Borrar", danger: true };
+    let ask = || Confirm { title: "¿Borrar?", text: "", lines: vec![], note: "", confirm_text: "Borrar", danger: true, alt_text: "" };
     headless::init();
     let app = AppWindow::new().unwrap();
     install_modal(&app);
@@ -123,4 +123,124 @@ fn confirm_runs_its_action_once() {
     key(&app, " ");
     assert_eq!((a.get(), b.get()), (1, 1));
     assert!(!m.get_open());
+}
+
+type Count = Rc<Cell<u32>>;
+
+/// Con «Borrar del todo…»: devuelve (ventana, confirmar, cancelar, alt).
+fn con_alt() -> (AppWindow, Count, Count, Count) {
+    let (app, ok, no) = abierto();
+    let alt = Rc::new(Cell::new(0));
+    let m = app.global::<Modal>();
+    let c = alt.clone();
+    m.on_alt(move || c.set(c.get() + 1));
+    m.set_open(false);
+    m.set_alt_text("Borrar del todo…".into());
+    headless::render(app.window(), 1100, 720);
+    m.set_open(true);
+    headless::render(app.window(), 1100, 720);
+    (app, ok, no, alt)
+}
+
+#[test]
+fn alt_reachable_with_tab_and_space() {
+    let (app, ok, no, alt) = con_alt();
+    key(&app, "\t");
+    key(&app, "\t");
+    key(&app, " ");
+    assert_eq!((ok.get(), no.get(), alt.get()), (0, 0, 1));
+    assert!(!app.global::<Modal>().get_open());
+}
+
+#[test]
+fn alt_enter_still_cancels() {
+    let (app, ok, no, alt) = con_alt();
+    key(&app, "\t");
+    key(&app, "\n");
+    assert_eq!((ok.get(), no.get(), alt.get()), (0, 1, 0));
+}
+
+/// Abre «Borrar del todo» y devuelve (ventana, confirmar, cancelar).
+fn purga() -> (AppWindow, Rc<Cell<u32>>, Rc<Cell<u32>>) {
+    headless::init();
+    let app = AppWindow::new().unwrap();
+    let (ok, no) = (Rc::new(Cell::new(0)), Rc::new(Cell::new(0)));
+    let p = app.global::<Purge>();
+    let c = ok.clone();
+    p.on_confirm(move || c.set(c.get() + 1));
+    let c = no.clone();
+    p.on_cancel(move || c.set(c.get() + 1));
+    p.set_text("No pasa por la papelera: se borra ya y libera 12,8 GB al momento.".into());
+    p.set_open(true);
+    headless::render(app.window(), 1100, 720);
+    (app, ok, no)
+}
+
+fn escribe(app: &AppWindow, s: &str) {
+    for ch in s.chars() {
+        key(app, &ch.to_string());
+    }
+}
+
+#[test]
+fn purge_enter_in_field_cancels() {
+    let (app, ok, no) = purga();
+    escribe(&app, "BORRAR");
+    key(&app, "\n");
+    assert_eq!((ok.get(), no.get()), (0, 1));
+    assert!(!app.global::<Purge>().get_open());
+}
+
+#[test]
+fn purge_disabled_until_borrar() {
+    let (app, ok, _) = purga();
+    escribe(&app, "BORR");
+    key(&app, "\t");
+    key(&app, " ");
+    assert_eq!(ok.get(), 0);
+}
+
+#[test]
+fn purge_lowercase_ok() {
+    let (app, ok, no) = purga();
+    escribe(&app, "borrar");
+    key(&app, "\t");
+    key(&app, " ");
+    assert_eq!((ok.get(), no.get()), (1, 0));
+    assert!(!app.global::<Purge>().get_open());
+}
+
+#[test]
+fn purge_escape_cancels() {
+    let (app, ok, no) = purga();
+    escribe(&app, "BORRAR");
+    key(&app, "\u{1b}");
+    assert_eq!((ok.get(), no.get()), (0, 1));
+    assert!(!app.global::<Purge>().get_open());
+}
+
+/// «Borrar del todo…» suelta la acción de confirmar y ejecuta la suya; la de «¿Borrar del
+/// todo?» solo corre una vez.
+#[test]
+fn alt_drops_confirm_and_purge_runs_once() {
+    use wincleaner::ui::{Confirm, confirm_with_alt, install_modal, purge};
+    headless::init();
+    let app = AppWindow::new().unwrap();
+    install_modal(&app);
+    let (ok, alt, borrado) = (Rc::new(Cell::new(0)), Rc::new(Cell::new(0)), Rc::new(Cell::new(0)));
+    let ask = Confirm { title: "¿Enviar a la papelera?", text: "", lines: vec![], note: "", confirm_text: "Enviar", danger: false, alt_text: "Borrar del todo…" };
+    let (o, a, b, w) = (ok.clone(), alt.clone(), borrado.clone(), app.as_weak());
+    confirm_with_alt(&app, ask, move || o.set(o.get() + 1), move || {
+        a.set(a.get() + 1);
+        let b = b.clone();
+        purge(&w.unwrap(), vec![], "", move || b.set(b.get() + 1));
+    });
+    app.global::<Modal>().invoke_alt();
+    app.global::<Modal>().invoke_confirm();
+    assert_eq!((ok.get(), alt.get()), (0, 1));
+    let p = app.global::<Purge>();
+    assert!(p.get_open());
+    p.invoke_confirm();
+    p.invoke_confirm();
+    assert_eq!(borrado.get(), 1);
 }

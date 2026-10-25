@@ -50,6 +50,45 @@ pub fn date_dmy((y, m, d): (u16, u8, u8)) -> String {
     format!("{d:02}/{m:02}/{y:04}")
 }
 
+/// Antigüedad aproximada: "hace 3 h", "hace 1 mes" (meses de 30 días, años de 365).
+pub fn ago(d: std::time::Duration) -> String {
+    let s = d.as_secs();
+    let (min, h, days) = (s / 60, s / 3600, s / 86400);
+    let plural = |n: u64, uno: &str, varios: &str| format!("hace {n} {}", if n == 1 { uno } else { varios });
+    match s {
+        0..60 => "hace un momento".into(),
+        60..3600 => format!("hace {min} min"),
+        3600..86400 => format!("hace {h} h"),
+        _ if days < 30 => plural(days, "día", "días"),
+        _ if days < 365 => plural(days / 30, "mes", "meses"),
+        _ => plural(days / 365, "año", "años"),
+    }
+}
+
+/// "64 %"; "<1 %" si es menos de uno pero no cero; con `whole` a 0, "0 %".
+pub fn percent(part: u64, whole: u64) -> String {
+    if whole == 0 || part == 0 {
+        return "0 %".into();
+    }
+    match part as u128 * 100 / whole as u128 {
+        0 => "<1 %".into(),
+        p => format!("{p} %"),
+    }
+}
+
+/// Fecha UTC `(año, mes, día)` (algoritmo *civil from days*).
+pub fn ymd(t: std::time::SystemTime) -> (u16, u8, u8) {
+    let days = t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() / 86400;
+    let z = days + 719_468;
+    let (era, doe) = (z / 146_097, z % 146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    ((yoe + era * 400 + (m <= 2) as u64) as u16, m as u8, d as u8)
+}
+
 /// Queda poco espacio: menos del 15 % libre. Con `total` a 0 (no se pudo leer) no avisa.
 pub fn low_space(free: u64, total: u64) -> bool {
     free as u128 * 100 < total as u128 * 15
@@ -91,6 +130,37 @@ mod tests {
         assert_eq!(duration(Duration::from_secs(5)), "5 s");
         assert_eq!(duration(Duration::from_secs(161)), "2 min 41 s");
         assert_eq!(duration(Duration::from_secs(3720)), "1 h 2 min");
+    }
+
+    #[test]
+    fn ago_formats() {
+        use std::time::Duration;
+        let d = |s: u64| ago(Duration::from_secs(s));
+        let day = 86400;
+        assert_eq!(d(30), "hace un momento");
+        assert_eq!(d(120), "hace 2 min");
+        assert_eq!(d(3 * 3600), "hace 3 h");
+        assert_eq!(d(day), "hace 1 día");
+        assert_eq!(d(3 * day), "hace 3 días");
+        assert_eq!(d(45 * day), "hace 1 mes");
+        assert_eq!(d(240 * day), "hace 8 meses");
+        assert_eq!(d(365 * day), "hace 1 año");
+        assert_eq!(d(800 * day), "hace 2 años");
+    }
+
+    #[test]
+    fn percent_formats() {
+        assert_eq!(percent(64, 100), "64 %");
+        assert_eq!(percent(1, 1000), "<1 %");
+        assert_eq!(percent(0, 100), "0 %");
+        assert_eq!(percent(5, 0), "0 %");
+    }
+
+    #[test]
+    fn ymd_utc() {
+        use std::time::{Duration, UNIX_EPOCH};
+        assert_eq!(ymd(UNIX_EPOCH), (1970, 1, 1));
+        assert_eq!(ymd(UNIX_EPOCH + Duration::from_secs(1_792_777_320)), (2026, 10, 23));
     }
 
     #[test]
