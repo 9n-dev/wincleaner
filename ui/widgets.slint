@@ -1,7 +1,8 @@
 // Componentes compartidos: son vistas sin lógica, con los estilos de las maquetas.
 import { Palette, Type, Icon } from "theme.slint";
 
-export enum ButtonKind { primary, secondary, danger }
+// `link`: solo texto rojo, sin borde ni fondo (el «Borrar del todo…» del modal).
+export enum ButtonKind { primary, secondary, danger, link }
 export enum Tone { ok, warn, bad, info, neutral }
 
 global Tones {
@@ -22,13 +23,15 @@ export component Button inherits FocusScope {
     in property <string> icon;
     in property <ButtonKind> kind: ButtonKind.secondary;
     in property <bool> enter-activates: true;
+    // Nombre para el lector de pantalla cuando el botón es solo un icono.
+    in property <string> tip;
     callback clicked();
     property <color> fg: root.kind == ButtonKind.primary ? Palette.on
-        : root.kind == ButtonKind.danger ? Palette.bad : Palette.tx;
+        : root.kind == ButtonKind.danger || root.kind == ButtonKind.link ? Palette.bad : Palette.tx;
 
     opacity: root.enabled ? 1 : 0.4;
     accessible-role: button;
-    accessible-label: root.text;
+    accessible-label: root.text != "" ? root.text : root.tip;
     accessible-enabled: root.enabled;
     // La acción de accesibilidad no mira `enabled`: se comprueba aquí.
     accessible-action-default => {
@@ -48,9 +51,10 @@ export component Button inherits FocusScope {
         border-radius: 8px;
         border-width: 1px;
         border-color: root.kind == ButtonKind.primary ? Palette.ac
-            : root.kind == ButtonKind.danger ? Palette.bad : Palette.line2;
+            : root.kind == ButtonKind.danger ? Palette.bad : root.kind == ButtonKind.link ? transparent : Palette.line2;
         background: root.kind == ButtonKind.primary ? (touch.has-hover && root.enabled ? Palette.ac.brighter(0.1) : Palette.ac)
-            : root.kind == ButtonKind.danger ? (touch.has-hover && root.enabled ? Palette.bad.with-alpha(0.12) : transparent)
+            : root.kind == ButtonKind.danger || root.kind == ButtonKind.link
+                ? (touch.has-hover && root.enabled ? Palette.bad.with-alpha(0.12) : transparent)
             : (touch.has-hover && root.enabled ? Palette.line : Palette.s2);
     }
 
@@ -86,12 +90,30 @@ export component Button inherits FocusScope {
             name: root.icon;
             color: root.fg;
         }
-        Text {
+        // Solo icono: sin texto ni hueco.
+        if root.text != "": Text {
             text: root.text;
             color: root.fg;
             font-weight: 500;
             vertical-alignment: center;
         }
+    }
+}
+
+// Baldosa de 30 px con el icono (Carpetas e Instaladores viejos).
+export component Tile inherits Rectangle {
+    in property <string> icon;
+    in property <color> tint;
+    width: 30px;
+    height: 30px;
+    border-radius: 8px;
+    background: Palette.s2;
+
+    Icon {
+        x: 7px;
+        y: 7px;
+        name: root.icon;
+        color: root.tint;
     }
 }
 
@@ -521,14 +543,103 @@ export global Modal {
     in property <string> note;
     in property <string> confirm-text: "Aceptar";
     in property <bool> danger;
+    // Si no va vacío, sale a la izquierda un botón de texto rojo que llama a `alt`.
+    in property <string> alt-text;
     callback confirm();
     callback cancel();
+    callback alt();
+}
+
+// Estado del modal «¿Borrar del todo?»; lo rellena Rust.
+export global Purge {
+    in-out property <bool> open;
+    in property <[ModalLine]> lines;
+    in property <string> text;
+    callback confirm();
+    callback cancel();
+}
+
+// Fondo oscuro y caja de los modales; el contenido va dentro, en columna.
+component Dialog inherits Rectangle {
+    in property <string> label;
+
+    Rectangle {
+        background: #0a0e11.with-alpha(0.6);
+        // Se come los clics: lo de detrás no se toca con el modal abierto.
+        TouchArea { }
+    }
+
+    Rectangle {
+        width: min(440px, parent.width * 0.9);
+        height: box.preferred-height + 44px;
+        background: Palette.s1;
+        border-width: 1px;
+        border-color: Palette.line2;
+        border-radius: 14px;
+        drop-shadow-blur: 50px;
+        drop-shadow-offset-y: 20px;
+        drop-shadow-color: #00000073;
+        accessible-role: groupbox;
+        accessible-label: root.label;
+
+        box := VerticalLayout {
+            padding: 22px;
+            spacing: 8px;
+
+            Text {
+                text: root.label;
+                color: Palette.tx;
+                font-size: 18px;
+                font-weight: 600;
+                wrap: word-wrap;
+            }
+            @children
+        }
+    }
+}
+
+// Líneas «nombre … valor» entre dos rayas.
+component ModalLines inherits Rectangle {
+    in property <[ModalLine]> lines;
+    height: lines-box.preferred-height + 1px;
+
+    Rectangle {
+        y: 0;
+        height: 1px;
+        background: Palette.line;
+    }
+    lines-box := VerticalLayout {
+        padding-top: 9px;
+        padding-bottom: 8px;
+        for l in root.lines: HorizontalLayout {
+            padding-top: 3px;
+            padding-bottom: 3px;
+            spacing: 12px;
+            Text {
+                text: l.label;
+                color: Palette.tx;
+                horizontal-stretch: 1;
+                overflow: elide;
+            }
+            Text {
+                text: l.value;
+                color: Palette.mu;
+                horizontal-alignment: right;
+            }
+        }
+    }
+    Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        background: Palette.line;
+    }
 }
 
 // Se pinta sobre todo. Intro y Esc cancelan siempre, tenga el foco quien lo tenga
 // (los botones no activan con Intro): solo se confirma con clic o Espacio.
 export component ConfirmModal inherits Rectangle {
     if Modal.open: FocusScope {
+        property <bool> has-alt: Modal.alt-text != "";
         init => { cancel-btn.focus(); }
         key-pressed(e) => {
             if (e.text == Key.Return || e.text == Key.Escape) {
@@ -536,107 +647,177 @@ export component ConfirmModal inherits Rectangle {
                 Modal.open = false;
                 return accept;
             }
-            // Trampa de foco: Tab y Mays+Tab dan la vuelta entre los dos botones del modal.
-            if (e.text == Key.Tab || e.text == Key.Backtab) {
-                if (cancel-btn.has-focus) { confirm-btn.focus(); } else { cancel-btn.focus(); }
+            // Trampa de foco: Tab da la vuelta entre los botones del modal (Cancelar,
+            // confirmar y el alternativo, si lo hay); Mays+Tab, al revés.
+            if (e.text == Key.Tab) {
+                if (cancel-btn.has-focus) { confirm-btn.focus(); }
+                else if (confirm-btn.has-focus && self.has-alt) { alt-btn.focus(); }
+                else { cancel-btn.focus(); }
+                return accept;
+            }
+            if (e.text == Key.Backtab) {
+                if (confirm-btn.has-focus) { cancel-btn.focus(); }
+                else if (cancel-btn.has-focus && self.has-alt) { alt-btn.focus(); }
+                else { confirm-btn.focus(); }
                 return accept;
             }
             return reject;
         }
 
-        Rectangle {
-            background: #0a0e11.with-alpha(0.6);
-            // Se come los clics: lo de detrás no se toca con el modal abierto.
-            TouchArea { }
-        }
+        Dialog {
+            label: Modal.title;
 
-        Rectangle {
-            width: min(440px, parent.width * 0.9);
-            height: box.preferred-height + 44px;
-            background: Palette.s1;
-            border-width: 1px;
-            border-color: Palette.line2;
-            border-radius: 14px;
-            drop-shadow-blur: 50px;
-            drop-shadow-offset-y: 20px;
-            drop-shadow-color: #00000073;
-            accessible-role: groupbox;
-            accessible-label: Modal.title;
-
-            box := VerticalLayout {
-                padding: 22px;
+            if Modal.text != "": Text {
+                text: Modal.text;
+                color: Palette.mu;
+                wrap: word-wrap;
+            }
+            if Modal.lines.length > 0: ModalLines {
+                lines: Modal.lines;
+            }
+            if Modal.note != "": Text {
+                text: Modal.note;
+                color: Palette.fa;
+                font-size: Type.label;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                padding-top: 10px;
                 spacing: 8px;
 
-                Text {
-                    text: Modal.title;
-                    color: Palette.tx;
-                    font-size: 18px;
-                    font-weight: 600;
-                    wrap: word-wrap;
-                }
-                if Modal.text != "": Text {
-                    text: Modal.text;
-                    color: Palette.mu;
-                    wrap: word-wrap;
-                }
-                if Modal.lines.length > 0: Rectangle {
-                    height: lines-box.preferred-height + 1px;
-                    Rectangle {
-                        y: 0;
-                        height: 1px;
-                        background: Palette.line;
-                    }
-                    lines-box := VerticalLayout {
-                        padding-top: 9px;
-                        padding-bottom: 8px;
-                        for l in Modal.lines: HorizontalLayout {
-                            padding-top: 3px;
-                            padding-bottom: 3px;
-                            Text {
-                                text: l.label;
-                                color: Palette.tx;
-                                horizontal-stretch: 1;
-                            }
-                            Text {
-                                text: l.value;
-                                color: Palette.mu;
-                                horizontal-alignment: right;
-                            }
-                        }
-                    }
-                    Rectangle {
-                        y: parent.height - 1px;
-                        height: 1px;
-                        background: Palette.line;
+                // Siempre está (la trampa de Tab lo nombra), pero sin texto no se ve ni se alcanza.
+                alt-btn := Button {
+                    text: Modal.alt-text;
+                    kind: ButtonKind.link;
+                    visible: Modal.alt-text != "";
+                    enabled: Modal.alt-text != "";
+                    enter-activates: false;
+                    clicked => {
+                        Modal.alt();
+                        Modal.open = false;
                     }
                 }
-                if Modal.note != "": Text {
-                    text: Modal.note;
-                    color: Palette.fa;
-                    font-size: Type.label;
-                    wrap: word-wrap;
+                Rectangle {
+                    horizontal-stretch: 1;
                 }
-                HorizontalLayout {
-                    padding-top: 10px;
-                    spacing: 8px;
-                    alignment: end;
+                cancel-btn := Button {
+                    text: "Cancelar";
+                    enter-activates: false;
+                    clicked => {
+                        Modal.cancel();
+                        Modal.open = false;
+                    }
+                }
+                confirm-btn := Button {
+                    text: Modal.confirm-text;
+                    kind: Modal.danger ? ButtonKind.danger : ButtonKind.primary;
+                    enter-activates: false;
+                    clicked => {
+                        Modal.confirm();
+                        Modal.open = false;
+                    }
+                }
+            }
+        }
+    }
+}
 
-                    cancel-btn := Button {
-                        text: "Cancelar";
-                        enter-activates: false;
-                        clicked => {
-                            Modal.cancel();
-                            Modal.open = false;
-                        }
-                    }
-                    confirm-btn := Button {
-                        text: Modal.confirm-text;
-                        kind: Modal.danger ? ButtonKind.danger : ButtonKind.primary;
-                        enter-activates: false;
-                        clicked => {
-                            Modal.confirm();
-                            Modal.open = false;
-                        }
+// «¿Borrar del todo?»: solo se confirma escribiendo BORRAR (da igual mayúsculas o minúsculas)
+// y con clic o Espacio sobre el botón. Intro (también en el campo) y Esc cancelan.
+export component PurgeModal inherits Rectangle {
+    if Purge.open: FocusScope {
+        property <bool> ready: input.text.to-uppercase() == "BORRAR";
+        init => { input.focus(); }
+        function cancel() {
+            Purge.cancel();
+            Purge.open = false;
+        }
+        key-pressed(e) => {
+            if (e.text == Key.Return || e.text == Key.Escape) {
+                self.cancel();
+                return accept;
+            }
+            // Trampa de foco: campo → «Borrar del todo» (si está activo) → Cancelar → campo.
+            if (e.text == Key.Tab) {
+                if (input.has-focus && self.ready) { purge-btn.focus(); }
+                else if (input.has-focus || purge-btn.has-focus) { cancel-btn.focus(); }
+                else { input.focus(); }
+                return accept;
+            }
+            if (e.text == Key.Backtab) {
+                if (cancel-btn.has-focus && self.ready) { purge-btn.focus(); }
+                else if (cancel-btn.has-focus || purge-btn.has-focus) { input.focus(); }
+                else { cancel-btn.focus(); }
+                return accept;
+            }
+            return reject;
+        }
+
+        Dialog {
+            label: "¿Borrar del todo?";
+
+            Note {
+                kind: Tone.bad;
+                title: "No se podrá recuperar.";
+                text: Purge.text;
+            }
+            if Purge.lines.length > 0: ModalLines {
+                lines: Purge.lines;
+            }
+            HorizontalLayout {
+                alignment: start;
+                Text {
+                    text: "Escribe ";
+                    color: Palette.mu;
+                    font-size: Type.label;
+                }
+                Text {
+                    text: "BORRAR";
+                    color: Palette.tx;
+                    font-size: Type.label;
+                    font-weight: 600;
+                }
+                Text {
+                    text: " para confirmar:";
+                    color: Palette.mu;
+                    font-size: Type.label;
+                }
+            }
+            Rectangle {
+                height: 36px;
+                background: Palette.bg;
+                border-width: 1px;
+                border-color: Palette.bad.with-alpha(input.has-focus ? 0.7 : 0.4);
+                border-radius: 8px;
+
+                input := TextInput {
+                    x: 12px;
+                    width: parent.width - 24px;
+                    color: Palette.tx;
+                    vertical-alignment: center;
+                    single-line: true;
+                    accessible-label: "Escribe BORRAR para confirmar";
+                    accepted => { cancel(); }
+                }
+            }
+            HorizontalLayout {
+                padding-top: 10px;
+                spacing: 8px;
+                alignment: end;
+
+                cancel-btn := Button {
+                    text: "Cancelar";
+                    enter-activates: false;
+                    clicked => { cancel(); }
+                }
+                purge-btn := Button {
+                    text: "Borrar del todo";
+                    kind: ButtonKind.danger;
+                    enabled: ready;
+                    enter-activates: false;
+                    clicked => {
+                        Purge.confirm();
+                        Purge.open = false;
                     }
                 }
             }

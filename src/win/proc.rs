@@ -248,6 +248,11 @@ pub fn company(exe: &str) -> Option<String> {
     version_string(exe, "CompanyName")
 }
 
+/// `ProductName` del archivo (p. ej. un instalador), igual que `description`.
+pub fn product_name(exe: &str) -> Option<String> {
+    version_string(exe, "ProductName")
+}
+
 fn version_string(exe: &str, key: &str) -> Option<String> {
     let w = wide(exe);
     let mut dummy: DWORD = 0;

@@ -67,6 +67,27 @@ pub fn set_security(app: &AppWindow, title: &str, text: &str) {
     d.set_security_text(text.into());
 }
 
+/// Tarjeta de Unidades, línea de Espacio: lo que ocupan los juegos y lo que sobra en duplicados.
+pub fn set_space(app: &AppWindow, games: Option<u64>, dups: Option<u64>) {
+    let mut text = match games.filter(|&g| g > 0) {
+        Some(g) => format!("{} en juegos", format::bytes(g)),
+        None => "Mira a dónde va cada GB".to_string(),
+    };
+    if let Some(w) = dups.filter(|&w| w > 0) {
+        if games.is_some_and(|g| g > 0) {
+            text += &format!(" · sobran {} en duplicados", format::bytes(w));
+        } else {
+            text = format!("Sobran {} en duplicados", format::bytes(w));
+        }
+    }
+    app.global::<SummaryData>().set_space_text(text.into());
+}
+
+/// Rehace la línea de Espacio con los datos que haya ahora.
+pub fn refresh_space(app: &AppWindow) {
+    set_space(app, super::games::total(), super::dups::waste());
+}
+
 /// Conecta la sección y lee las unidades por primera vez.
 pub fn init(app: &AppWindow) {
     let d = app.global::<SummaryData>();
@@ -84,4 +105,5 @@ pub fn init(app: &AppWindow) {
         }
     });
     refresh_drives(app);
+    refresh_space(app);
 }

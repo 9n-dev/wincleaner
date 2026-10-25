@@ -14,6 +14,7 @@ export global Palette {
     out property <color> warn: #d6b38a;
     out property <color> bad: #d68a8a;
     out property <color> info: #8fb0c4;
+    out property <color> pur: #c4a7b4;
     out property <color> on: #171e23;
 }
 
@@ -56,7 +57,7 @@ export component Icon {
         commands:
             root.name == "home" ? "M3 11l9-7 9 7M5 10v10h14V10"
             : root.name == "broom" ? "M18 3l-6 9M8 11h7l2.5 9h-12zM9 15v5M12 15v5M15 15v5"
-            : root.name == "chart" ? "M4 20V10M10 20V4M16 20v-7M21 20H3"
+            : root.name == "disk" ? "M12 3a9 9 0 1 0 9 9h-9zM15 3.5A9 9 0 0 1 20.5 9H15z"
             : root.name == "apps" ? "M5.5 4h4a1.5 1.5 0 0 1 1.5 1.5v4a1.5 1.5 0 0 1 -1.5 1.5h-4a1.5 1.5 0 0 1 -1.5 -1.5v-4a1.5 1.5 0 0 1 1.5 -1.5zM14.5 4h4a1.5 1.5 0 0 1 1.5 1.5v4a1.5 1.5 0 0 1 -1.5 1.5h-4a1.5 1.5 0 0 1 -1.5 -1.5v-4a1.5 1.5 0 0 1 1.5 -1.5zM5.5 13h4a1.5 1.5 0 0 1 1.5 1.5v4a1.5 1.5 0 0 1 -1.5 1.5h-4a1.5 1.5 0 0 1 -1.5 -1.5v-4a1.5 1.5 0 0 1 1.5 -1.5zM14.5 13h4a1.5 1.5 0 0 1 1.5 1.5v4a1.5 1.5 0 0 1 -1.5 1.5h-4a1.5 1.5 0 0 1 -1.5 -1.5v-4a1.5 1.5 0 0 1 1.5 -1.5z"
             : root.name == "pulse" ? "M3 12h4l3-7 4 14 3-7h4"
             : root.name == "shield" ? "M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"
@@ -70,7 +71,13 @@ export component Icon {
             : root.name == "x" ? "M6 6l12 12M18 6L6 18"
             : root.name == "drive" ? "M5 7h14a2 2 0 0 1 2 2v6a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-6a2 2 0 0 1 2 -2zM7 12h.5"
             : root.name == "stop" ? "M8 6h8a2 2 0 0 1 2 2v8a2 2 0 0 1 -2 2h-8a2 2 0 0 1 -2 -2v-8a2 2 0 0 1 2 -2z"
-            : root.name == "ext" ? "M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"
+            : root.name == "file" ? "M6 3h8l4 4v14H6zM14 3v4h4"
+            : root.name == "game" ? "M8 8h8a5 5 0 0 1 5 5a5 5 0 0 1 -5 5h-8a5 5 0 0 1 -5 -5a5 5 0 0 1 5 -5zM8 11v4M6 13h4M15.5 12.5h.5M17.5 14.5h.5"
+            : root.name == "copy" ? "M10 8h8a2 2 0 0 1 2 2v8a2 2 0 0 1 -2 2h-8a2 2 0 0 1 -2 -2v-8a2 2 0 0 1 2 -2zM16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"
+            : root.name == "box" ? "M3 8l9-5 9 5v8l-9 5-9-5zM3 8l9 5 9-5M12 13v8"
+            : root.name == "trash" ? "M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"
+            : root.name == "back" ? "M15 5l-7 7 7 7"
+            : root.name == "ext" || root.name == "link" ? "M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"
             : root.name == "refresh" ? "M20 11a8 8 0 1 0-2 6M20 5v6h-6"
             : "";
     }

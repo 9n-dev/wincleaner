@@ -1,14 +1,17 @@
 //! Ventana principal: crea `AppWindow`, conecta la barra lateral y monta las secciones.
 
-mod analyze;
 mod clean;
+mod dups;
+mod games;
+mod installers;
 mod procs;
 mod programs;
 mod security;
+mod space;
 mod summary;
 
 use slint::{CloseRequestResponse, ComponentHandle};
-use wincleaner::ui::{self, AppWindow, Nav};
+use wincleaner::ui::{self, AppWindow, Nav, SpaceData};
 
 use crate::win;
 
@@ -51,8 +54,18 @@ pub fn run() {
     });
     summary::init(&app);
     let _clean = clean::Clean::new(&app);
-    analyze::Analyze::new(&app);
-    programs::Programs::new(&app);
+    let programs = programs::Programs::new(&app);
+    let space = space::Space::new(&app);
+    let games = games::Games::new(&app, programs, space.clone());
+    let _dups = dups::Dups::new(&app, space.clone());
+    let installers = installers::Installers::new(&app, space.clone());
+    // Slint admite un solo manejador por callback: aquí se reparte a cada pestaña de Espacio.
+    app.global::<SpaceData>().on_tab_shown(move |i| match i {
+        0 => space.shown(),
+        1 => games.load(),
+        3 => installers.load(),
+        _ => {}
+    });
     procs::Procs::new(&app);
     security::Security::new(&app);
     let _ = app.run();

@@ -48,6 +48,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     data.set_procs_text("11 programas arrancan con Windows".into());
     data.set_programs_title("86 instalados · 38,2 GB".into());
     data.set_programs_text("El más grande: Steam (12,4 GB)".into());
+    data.set_space_text("382 GB en juegos · sobran 18,6 GB en duplicados".into());
     for (suffix, w, h) in [("", 1100, 720), ("-min", 880, 600)] {
         guarda(&format!("wcv2-inicio{suffix}"), &headless::render(app.window(), w, h), w, h)?;
     }
@@ -143,36 +144,296 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.set_locked(false);
     modal.set_open(false);
 
-    // Analizar, con los datos de las maquetas.
-    use wincleaner::ui::{AnalyzeData, DirRow};
-    let data = app.global::<AnalyzeData>();
-    data.set_drives(model(["C: · 64 GB libres", "D: · 1,2 TB libres"].map(Into::into).to_vec()));
-    data.set_title("Analizando C:…".into());
-    data.set_progress("412 803 archivos · 1 min 12 s".into());
+    // Espacio, con los datos de `espacio*()`, `ROOT` y `VID` de las maquetas.
+    use wincleaner::ui::{DriveItem, SpaceData, SpaceRow, StripPart};
+    let data = app.global::<SpaceData>();
+    data.set_drives(model(vec![
+        DriveItem { name: "C:".into(), label: "Sistema".into(), text: "412 GB usados de 476 GB".into(), used: 0.87, low: true, analyzed: false },
+        DriveItem { name: "D:".into(), label: "Datos".into(), text: "620 GB usados de 1,8 TB".into(), used: 0.34, low: false, analyzed: false },
+    ]));
+    data.set_progress("212 GB de 412 GB · 684 210 archivos · 1 min 05 s".into());
+    data.set_progress_value(0.51);
     data.set_current("C:\\Users\\ana\\AppData\\Local\\Packages\\…".into());
-    data.set_summary("Analizados 1 284 112 archivos en 2 min 41 s.".into());
-    data.set_rows(model(
-        [
-            ("C:\\Users\\ana\\AppData\\Local\\Steam\\steamapps\\common\\Baldur's Gate 3", "118 GB", 1.0),
-            ("C:\\Users\\ana\\Videos\\OBS", "41,2 GB", 0.35),
-            ("C:\\Windows\\WinSxS", "9,8 GB", 0.08),
-            ("C:\\Users\\ana\\AppData\\Local\\Docker\\wsl", "8,6 GB", 0.07),
-            ("C:\\hiberfil.sys", "6,4 GB", 0.05),
-            ("C:\\Users\\ana\\AppData\\Local\\Google\\Chrome\\User Data", "3,9 GB", 0.03),
-            ("C:\\ProgramData\\Package Cache", "2,7 GB", 0.02),
-            ("C:\\Users\\ana\\Downloads\\isos", "2,1 GB", 0.02),
-        ]
-        .map(|(p, s, share)| DirRow { path: p.into(), size: s.into(), share })
-        .to_vec(),
-    ));
+    // (icono, nombre, ruta, tamaño en GB, %, color, pastilla, se puede borrar); `total` es la carpeta.
+    type Fila<'a> = (&'a str, &'a str, &'a str, f32, &'a str, i32, &'a str, bool);
+    let filas = |v: &[Fila], total: f32| {
+        let rows: Vec<SpaceRow> = v
+            .iter()
+            .map(|&(icon, name, sub, gb, pct, color, badge, del)| SpaceRow {
+                icon: icon.into(),
+                name: name.into(),
+                sub: sub.into(),
+                size: format!("{gb} GB").replace('.', ",").into(),
+                pct: pct.into(),
+                share: gb / total,
+                color,
+                badge: badge.into(),
+                can_enter: icon == "folder",
+                can_delete: del,
+                can_open: !name.ends_with("más pequeños"),
+                selectable: !name.ends_with("más pequeños"),
+            })
+            .collect();
+        let mut strip: Vec<StripPart> =
+            rows.iter().filter(|r| r.color < 5).map(|r| StripPart { label: r.name.clone(), share: r.share, color: r.color }).collect();
+        let rest = 1.0 - strip.iter().map(|p| p.share).sum::<f32>();
+        strip.push(StripPart { label: "Resto".into(), share: rest, color: 5 });
+        (model(rows), model(strip))
+    };
+    let raiz = filas(
+        &[
+            ("game", "Steam", "C:\\Program Files (x86)\\Steam", 186.0, "45 %", 0, "Juegos", false),
+            ("folder", "Vídeos", "C:\\Users\\ana\\Videos", 64.0, "16 %", 1, "", true),
+            ("lock", "Windows", "C:\\Windows", 38.0, "9 %", 2, "Protegida", false),
+            ("folder", "Descargas", "C:\\Users\\ana\\Downloads", 29.0, "7 %", 3, "", true),
+            ("lock", "Archivos de programa", "C:\\Program Files", 24.0, "6 %", 4, "Protegida", false),
+            ("file", "hiberfil.sys", "Archivo de hibernación de Windows", 6.4, "2 %", 5, "Sistema", false),
+            ("folder", "AppData", "C:\\Users\\ana\\AppData", 5.9, "1 %", 5, "", true),
+        ],
+        412.0,
+    );
+    let videos = filas(
+        &[
+            ("folder", "OBS", "C:\\Users\\ana\\Videos\\OBS", 41.2, "64 %", 0, "", true),
+            ("file", "boda_prima_4K.mov", "14/03/2024", 12.8, "20 %", 1, "", true),
+            ("folder", "Capturas", "C:\\Users\\ana\\Videos\\Captures", 6.1, "10 %", 2, "", true),
+            ("file", "partida_final.mkv", "02/09/2026", 2.4, "4 %", 3, "", true),
+            ("file", "1 284 archivos más pequeños", "Juntos", 1.5, "2 %", 5, "", false),
+        ],
+        64.0,
+    );
+    let crumbs = |v: &[&str]| model(v.iter().map(|&c| c.into()).collect::<Vec<slint::SharedString>>());
     app.set_section(2);
-    for (nombre, phase, selected) in [("analizar", 0, -1), ("analizar-progreso", 1, -1), ("analizar-resultados", 2, 1)] {
+    for (nombre, phase, filas, migas, selected, lock) in [
+        ("espacio", 0, &raiz, &["Este equipo", "C:"][..], -1, false),
+        ("espacio-analizando", 1, &raiz, &["Este equipo", "C:"][..], -1, false),
+        ("espacio-raiz", 2, &raiz, &["Este equipo", "C:"][..], 1, false),
+        ("espacio-carpeta", 2, &videos, &["Este equipo", "C:", "Usuarios", "ana", "Vídeos"][..], 1, false),
+        ("espacio-protegida", 2, &raiz, &["Este equipo", "C:"][..], 2, true),
+    ] {
+        data.set_subtitle(
+            match phase {
+                0 => "Mira a dónde va cada GB y libera lo que no necesites.",
+                1 => "Analizando C:…",
+                _ => "C: · 412 GB usados de 476 GB · analizado hace 2 min",
+            }
+            .into(),
+        );
         data.set_phase(phase);
+        data.set_rows(filas.0.clone());
+        data.set_strip(filas.1.clone());
+        data.set_crumbs(crumbs(migas));
         data.set_selected(selected);
+        data.set_lock_title(if lock { "Windows está protegida." } else { "" }.into());
+        data.set_lock_text(
+            if lock {
+                "Puedes ver qué ocupa, pero no borrarla desde aquí: romperías el sistema. Para liberar espacio de Windows usa «Limpiar»."
+            } else {
+                ""
+            }
+            .into(),
+        );
         for (suffix, w, h) in [("", 1100, 720), ("-min", 880, 600)] {
-            guarda(&format!("wcv2-{nombre}{suffix}"), &headless::render(app.window(), w, h), w, h)?;
+            guarda(&format!("wces-{nombre}{suffix}"), &headless::render(app.window(), w, h), w, h)?;
         }
     }
+
+    // Borrar desde Carpetas: papelera, borrar del todo, hecho y error, en Vídeos.
+    let migas = crumbs(&["Este equipo", "C:", "Usuarios", "ana", "Vídeos"]);
+    let sin_boda = filas(
+        &[
+            ("folder", "OBS", "C:\\Users\\ana\\Videos\\OBS", 41.2, "64 %", 0, "", true),
+            ("folder", "Capturas", "C:\\Users\\ana\\Videos\\Captures", 6.1, "10 %", 1, "", true),
+            ("file", "partida_final.mkv", "02/09/2026", 2.4, "4 %", 2, "", true),
+            ("file", "1 284 archivos más pequeños", "Juntos", 1.5, "2 %", 5, "", false),
+        ],
+        51.2,
+    );
+    let boda = || model(vec![wincleaner::ui::ModalLine { label: "boda_prima_4K.mov".into(), value: "12,8 GB".into() }]);
+    let purge = app.global::<wincleaner::ui::Purge>();
+    data.set_crumbs(migas);
+    data.set_lock_title("".into());
+    data.set_lock_text("".into());
+    for nombre in ["papelera", "borrar-todo", "hecho", "error"] {
+        let (filas, selected) = if nombre == "hecho" { (&sin_boda, -1) } else { (&videos, if nombre == "error" { -1 } else { 1 }) };
+        data.set_rows(filas.0.clone());
+        data.set_strip(filas.1.clone());
+        data.set_selected(selected);
+        data.set_subtitle(
+            match nombre {
+                "hecho" => "C: · 399 GB usados de 476 GB",
+                "error" => "C: · 412 GB usados de 476 GB · analizado hace 2 min",
+                _ => "C: · 412 GB usados de 476 GB",
+            }
+            .into(),
+        );
+        data.set_note(match nombre {
+            "hecho" => 1,
+            "error" => 2,
+            _ => 0,
+        });
+        data.set_note_title(
+            if nombre == "hecho" { "Enviado a la papelera: boda_prima_4K.mov (12,8 GB)." } else { "No se ha podido borrar todo «OBS»." }.into(),
+        );
+        data.set_note_text(
+            if nombre == "hecho" {
+                "Vacía la papelera en «Limpiar» cuando quieras liberar el espacio."
+            } else {
+                "3 archivos están en uso por otro programa (38 GB se han enviado a la papelera; quedan 3,2 GB). \
+                 Cierra los programas que los usen y vuelve a intentarlo."
+            }
+            .into(),
+        );
+        data.set_can_undo(nombre == "hecho");
+        data.set_can_retry(nombre == "error");
+        if nombre == "papelera" {
+            modal.set_title("¿Enviar a la papelera?".into());
+            modal.set_text("".into());
+            modal.set_lines(boda());
+            modal.set_note("Podrás recuperarlo desde la papelera mientras no la vacíes. El espacio no se libera hasta entonces.".into());
+            modal.set_confirm_text("Enviar a la papelera".into());
+            modal.set_danger(false);
+            modal.set_alt_text("Borrar del todo…".into());
+            modal.set_open(true);
+        }
+        if nombre == "borrar-todo" {
+            purge.set_lines(boda());
+            purge.set_text("No pasa por la papelera: se borra ya y libera 12,8 GB al momento.".into());
+            purge.set_open(true);
+            // El campo tiene el foco al abrir: se escribe como el usuario.
+            headless::render(app.window(), 1100, 720);
+            for c in ["B", "O", "R", "R"] {
+                headless::press(app.window(), c.into());
+            }
+        }
+        for (suffix, w, h) in [("", 1100, 720), ("-min", 880, 600)] {
+            guarda(&format!("wces-espacio-{nombre}{suffix}"), &headless::render(app.window(), w, h), w, h)?;
+        }
+        modal.set_open(false);
+        purge.set_open(false);
+    }
+    data.set_note(0);
+
+    // Juegos, con los datos de `GAMES` de las maquetas: lista, confirmar y vacío.
+    use wincleaner::ui::{GameRow, GamesData};
+    let games = [
+        (0x8fb0c4, "B", "Baldur's Gate 3", "Steam · jugado hace 3 días", "118 GB"),
+        (0xc4a7b4, "C", "Call of Duty®", "Battle.net · jugado hace 8 meses", "92 GB"),
+        (0xd6b38a, "F", "Fortnite", "Epic Games · jugado hace 1 año", "34 GB"),
+        (0xa9c2b8, "H", "Hollow Knight", "GOG · jugado hace 2 años", "9,2 GB"),
+        (0x8fc2c0, "F", "Forza Horizon 5", "Xbox · jugado hace 5 meses", "128 GB"),
+        (0x8fb0c4, "S", "Stardew Valley", "Steam · nunca jugado", "620 MB"),
+    ]
+    .map(|(c, l, n, d, s): (u32, _, _, _, _)| GameRow {
+        name: n.into(),
+        sub: d.into(),
+        size: s.into(),
+        letter: l.into(),
+        tint: slint::Color::from_rgb_u8((c >> 16) as u8, (c >> 8) as u8, c as u8),
+    });
+    let juegos = app.global::<GamesData>();
+    juegos.set_phase(1);
+    data.set_tab(1);
+    modal.set_title("¿Desinstalar Call of Duty®?".into());
+    modal.set_text("Se abrirá Battle.net para desinstalarlo: así el lanzador sabe que ya no está. Liberarás unos 92 GB.".into());
+    modal.set_lines(model(Vec::new()));
+    modal.set_note("".into());
+    modal.set_confirm_text("Abrir Battle.net".into());
+    modal.set_danger(true);
+    modal.set_alt_text("".into());
+    for (nombre, rows, selected) in
+        [("juegos", games.to_vec(), 1), ("juegos-confirmar", games.to_vec(), 1), ("juegos-vacio", Vec::new(), -1)]
+    {
+        juegos.set_subtitle(if rows.is_empty() { "Ningún juego encontrado" } else { "6 juegos instalados · 382 GB en total" }.into());
+        juegos.set_rows(model(rows));
+        juegos.set_selected(selected);
+        modal.set_open(nombre == "juegos-confirmar");
+        for (suffix, w, h) in [("", 1100, 720), ("-min", 880, 600)] {
+            guarda(&format!("wces-{nombre}{suffix}"), &headless::render(app.window(), w, h), w, h)?;
+        }
+    }
+    modal.set_open(false);
+
+    // Duplicados, con los datos de `duplicados*()` y `DUPS` de las maquetas: dónde buscar,
+    // buscando, resultados y vacío.
+    use wincleaner::ui::{DupFileRow, DupGroupRow, DupPlace, DupStep, DupsData};
+    let dups = app.global::<DupsData>();
+    data.set_tab(2);
+    dups.set_places(model(
+        [
+            ("Tus carpetas", "Documentos, Escritorio, Descargas, Imágenes, Vídeos y Música", true),
+            ("D: Datos", "Toda la unidad", true),
+            ("Resto de C:", "Sin Windows, Archivos de programa ni AppData", false),
+        ]
+        .map(|(n, t, c)| DupPlace { name: n.into(), text: t.into(), checked: c })
+        .to_vec(),
+    ));
+    dups.set_steps(model(
+        [("Listando archivos", "184 210 archivos", 2), ("Comparando tamaños", "6 120 posibles duplicados", 2), ("Comparando contenido", "2 340 de 6 120", 1)]
+            .map(|(n, t, s)| DupStep { name: n.into(), text: t.into(), state: s })
+            .to_vec(),
+    ));
+    dups.set_progress(0.38);
+    let grupos = [
+        ("Vídeo", "vacaciones_2023.mp4", "3 copias · sobran 4,2 GB", vec![
+            (r"C:\Users\ana\Videos\vacaciones_2023.mp4", "14/08/2023", false),
+            (r"C:\Users\ana\Downloads\vacaciones_2023.mp4", "02/09/2023", true),
+            (r"D:\Copia\Vídeos\vacaciones_2023.mp4", "10/01/2024", true),
+        ]),
+        ("PDF", "Contrato_alquiler.pdf", "2 copias · sobran 2,1 MB", vec![
+            (r"C:\Users\ana\Documents\Contrato_alquiler.pdf", "03/02/2025", false),
+            (r"C:\Users\ana\Downloads\Contrato_alquiler (1).pdf", "03/02/2025", true),
+        ]),
+        ("Imagen", "IMG_4821.png", "2 copias · sobran 6,8 MB", vec![
+            (r"C:\Users\ana\Pictures\Móvil\IMG_4821.png", "21/06/2026", false),
+            (r"C:\Users\ana\Desktop\IMG_4821.png", "22/06/2026", true),
+        ]),
+    ]
+    .map(|(k, n, t, fs)| DupGroupRow {
+        kind: k.into(),
+        name: n.into(),
+        text: t.into(),
+        files: model(fs.into_iter().map(|(p, d, m)| DupFileRow { path: p.into(), date: d.into(), marked: m, protected: false }).collect()),
+    });
+    dups.set_send_text("Enviar 412 copias a la papelera · 18,6 GB".into());
+    dups.set_can_send(true);
+    for (nombre, phase, subtitulo, rows) in [
+        ("duplicados", 0, "Archivos idénticos repetidos en tus carpetas y unidades.", Vec::new()),
+        ("duplicados-buscando", 1, "Buscando…", Vec::new()),
+        ("duplicados-resultados", 2, "214 grupos · sobran 18,6 GB", grupos.to_vec()),
+        ("duplicados-vacio", 2, "Búsqueda terminada en 48 s", Vec::new()),
+    ] {
+        dups.set_phase(phase);
+        dups.set_subtitle(subtitulo.into());
+        dups.set_groups(model(rows));
+        for (suffix, w, h) in [("", 1100, 720), ("-min", 880, 600)] {
+            guarda(&format!("wces-{nombre}{suffix}"), &headless::render(app.window(), w, h), w, h)?;
+        }
+    }
+
+    // Instaladores viejos, con los datos de `INST` de las maquetas: lista y vacío.
+    use wincleaner::ui::{InstallerRow, InstallersData};
+    let inst = app.global::<InstallersData>();
+    data.set_tab(3);
+    inst.set_phase(1);
+    let filas = [
+        ("Win11_24H2_Spanish_x64.iso", "Descargas · hace 11 meses", "5,8 GB", true),
+        ("VisualStudioSetup.exe", "Descargas · hace 7 meses · ya instalado", "4,1 MB", true),
+        ("OBS-Studio-30.2-Windows-Installer.exe", "Descargas · hace 5 meses · ya instalado", "128 MB", true),
+        ("python-3.12.6-amd64.exe", "Escritorio · hace 2 meses · ya instalado", "25 MB", true),
+        ("SteamSetup.exe", "Descargas · hace 1 año · ya instalado", "2,3 MB", true),
+        ("NVIDIA_app_v11.0.exe", "Descargas · hace 1 mes", "148 MB", false),
+    ]
+    .map(|(n, d, s, c)| InstallerRow { name: n.into(), sub: d.into(), size: s.into(), checked: c, protected: false });
+    inst.set_send_text("Enviar 5 a la papelera · 6,0 GB".into());
+    inst.set_can_send(true);
+    for (nombre, rows) in [("instaladores", filas.to_vec()), ("instaladores-vacio", Vec::new())] {
+        inst.set_rows(model(rows));
+        for (suffix, w, h) in [("", 1100, 720), ("-min", 880, 600)] {
+            guarda(&format!("wces-{nombre}{suffix}"), &headless::render(app.window(), w, h), w, h)?;
+        }
+    }
+    data.set_tab(0);
 
     // Programas, con los datos de `PROGS` de las maquetas.
     use wincleaner::ui::{ProgramRow, ProgramsData};

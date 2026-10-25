@@ -1,0 +1,20 @@
+{
+	"FormatVersion": 0,
+	"bIsIncompleteInstall": false,
+	"LaunchExecutable": "FortniteGame/Binaries/Win64/FortniteLauncher.exe",
+	"ManifestLocation": "C:\\ProgramData\\Epic\\EpicGamesLauncher\\Data\\Manifests",
+	"BaseURLs": [
+		"https://download.epicgames.com/Builds/Fortnite/CloudDir"
+	],
+	"AppCategories": [
+		"public",
+		"games",
+		"applications"
+	],
+	"DisplayName": "Fortnite",
+	"InstallLocation": "C:\\Program Files\\Epic Games\\Fortnite",
+	"InstallSize": 36507222016,
+	"AppName": "Fortnite",
+	"CatalogNamespace": "fn",
+	"AppVersionString": "++Fortnite+Release-32.00-CL-38324950-Windows"
+}

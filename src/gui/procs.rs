@@ -432,6 +432,7 @@ pub(super) fn ask_kill(
         note: "",
         confirm_text: "Terminar",
         danger: true,
+        alt_text: "",
     };
     let weak = app.as_weak();
     confirm(app, ask, move || {

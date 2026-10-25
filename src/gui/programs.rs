@@ -61,7 +61,7 @@ pub(super) fn tint(name: &str) -> Color {
     Color::from_rgb_u8((c >> 16) as u8, (c >> 8) as u8, c as u8)
 }
 
-fn letter(name: &str) -> String {
+pub(super) fn letter(name: &str) -> String {
     name.chars().find(|c| c.is_alphanumeric()).map_or("?".into(), |c| c.to_uppercase().collect())
 }
 
@@ -218,13 +218,14 @@ impl Programs {
             note: "",
             confirm_text: "Abrir desinstalador",
             danger: true,
+            alt_text: "",
         };
         confirm(&app, ask, move || k.start(hive, key));
     }
 
     /// Ya confirmado: vuelve a leer la entrada y los permisos (pueden haber cambiado desde que
     /// se enseñó el botón), comprueba el `.exe` y lo lanza.
-    fn start(&self, hive: Hive, key: String) {
+    pub(crate) fn start(&self, hive: Hive, key: String) {
         let Some(app) = self.0.upgrade() else { return };
         if STATE.with_borrow(|st| st.waiting.is_some()) {
             return;
