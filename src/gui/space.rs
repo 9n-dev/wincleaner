@@ -338,7 +338,7 @@ fn exists(p: &Path) -> bool {
 }
 
 /// Borra del todo lo que pase las zonas sobre la ruta escrita y la final; lo demás es `Protected`.
-/// Lo que sigue en pie después falla con un motivo genérico (`purge` no dice cuál).
+/// Cada archivo que no se borra sale con su ruta y su motivo.
 fn purge_all(items: &[PathBuf], zones: &Zones) -> Report {
     let mut rep = Report::default();
     for p in items {
@@ -346,10 +346,7 @@ fn purge_all(items: &[PathBuf], zones: &Zones) -> Report {
             rep.failed.push((p.clone(), Reason::Protected));
             continue;
         }
-        clean::purge(p);
-        if exists(p) {
-            rep.failed.push((p.clone(), Reason::Other(0)));
-        }
+        rep.failed.extend(clean::purge(p).failed.into_iter().map(|(f, _, r)| (f, r)));
     }
     rep
 }

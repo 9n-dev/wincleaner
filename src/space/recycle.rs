@@ -32,6 +32,8 @@ pub enum Reason {
     Changed,
     /// Windows lo ha borrado sin pasar por la papelera (no se puede deshacer): ya no existe.
     Purged,
+    /// Enlace o junction: no se sigue ni se borra.
+    Link,
     Other(i32),
 }
 
@@ -40,6 +42,16 @@ pub fn reason(hr: i32) -> Reason {
         0x8007_0020 | 0x8007_0021 => Reason::InUse,
         0x8007_0005 => Reason::Denied,
         _ => Reason::Other(hr),
+    }
+}
+
+/// Motivo a partir del código de error del sistema (`None`: lo ha parado una regla).
+pub fn os_reason(code: Option<i32>) -> Reason {
+    match code {
+        Some(32 | 33) => Reason::InUse,
+        Some(5) => Reason::Denied,
+        None => Reason::Protected,
+        Some(c) => Reason::Other(c),
     }
 }
 
@@ -116,7 +128,7 @@ pub fn outcome_text(o: &Outcome, purge: bool, alt: bool) -> (bool, String, Strin
             format!("{files} no se {} borrar por falta de permisos", pl("puede", "pueden")),
             "Reinicia WinCleaner como administrador y vuelve a intentarlo.".to_string(),
         ),
-        Reason::Protected => (
+        Reason::Protected | Reason::Link => (
             format!("{items} {} en una carpeta protegida", pl("está", "están")),
             "WinCleaner no borra nada en las carpetas del sistema.".to_string(),
         ),
@@ -185,6 +197,15 @@ mod tests {
 
     fn outcome(names: &[&str], sent: u64, left: u64, failed: Vec<Reason>) -> Outcome {
         Outcome { names: names.iter().map(|s| s.to_string()).collect(), sent, left, failed, missing: false }
+    }
+
+    #[test]
+    fn os_reasons() {
+        assert_eq!(os_reason(Some(32)), Reason::InUse);
+        assert_eq!(os_reason(Some(33)), Reason::InUse);
+        assert_eq!(os_reason(Some(5)), Reason::Denied);
+        assert_eq!(os_reason(None), Reason::Protected);
+        assert_eq!(os_reason(Some(1234)), Reason::Other(1234));
     }
 
     #[test]
