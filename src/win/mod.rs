@@ -6,6 +6,7 @@ pub mod icon;
 pub mod proc;
 pub mod recycle;
 pub mod reg;
+pub mod rm;
 pub mod services;
 pub mod startup;
 pub mod trust;

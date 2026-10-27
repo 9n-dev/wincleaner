@@ -72,12 +72,11 @@ export global SpaceData {
     in-out property <int> selected: -1;
     // Hay carpetas sin acceso en la carpeta actual.
     in property <bool> denied;
-    // Aviso de resultado: 0 nada, 1 ok, 2 error.
+    // Aviso verde de resultado: 0 nada, 1 hecho. Los fallos salen en la ventana de aviso.
     in property <int> note;
     in property <string> note-title;
     in property <string> note-text;
     in property <bool> can-undo;
-    in property <bool> can-retry;
     callback analyze(int);
     callback stop();
     callback reanalyze();
@@ -87,7 +86,6 @@ export global SpaceData {
     callback open(int);
     callback recycle(int);
     callback undo();
-    callback retry();
     callback dismiss();
     callback tab-shown(int);
 }
@@ -413,20 +411,14 @@ export component SpacePage inherits Rectangle {
 
         if SpaceData.note != 0: Note {
             vertical-stretch: 0;
-            kind: SpaceData.note == 1 ? Tone.ok : Tone.bad;
-            icon: SpaceData.note == 1 ? "check" : "warn";
+            kind: Tone.ok;
+            icon: "check";
             title: SpaceData.note-title;
             text: SpaceData.note-text;
 
             if SpaceData.can-undo: Button {
                 text: "Deshacer";
                 clicked => { SpaceData.undo(); }
-            }
-            if SpaceData.can-retry: Button {
-                text: "Reintentar";
-                // Intro nunca borra.
-                enter-activates: false;
-                clicked => { SpaceData.retry(); }
             }
             Button {
                 icon: "x";

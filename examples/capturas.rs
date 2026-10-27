@@ -251,38 +251,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let boda = || model(vec![wincleaner::ui::ModalLine { label: "boda_prima_4K.mov".into(), value: "12,8 GB".into() }]);
     let purge = app.global::<wincleaner::ui::Purge>();
     data.set_crumbs(migas);
-    for nombre in ["papelera", "borrar-todo", "hecho", "error"] {
-        let (filas, selected) = if nombre == "hecho" { (&sin_boda, -1) } else { (&videos, if nombre == "error" { -1 } else { 1 }) };
+    for nombre in ["papelera", "borrar-todo", "hecho"] {
+        let (filas, selected) = if nombre == "hecho" { (&sin_boda, -1) } else { (&videos, 1) };
         data.set_rows(filas.0.clone());
         data.set_strip(filas.1.clone());
         data.set_selected(selected);
-        data.set_subtitle(
-            match nombre {
-                "hecho" => "C: · 399 GB usados de 476 GB",
-                "error" => "C: · 412 GB usados de 476 GB · analizado hace 2 min",
-                _ => "C: · 412 GB usados de 476 GB",
-            }
-            .into(),
-        );
-        data.set_note(match nombre {
-            "hecho" => 1,
-            "error" => 2,
-            _ => 0,
-        });
-        data.set_note_title(
-            if nombre == "hecho" { "Enviado a la papelera: boda_prima_4K.mov (12,8 GB)." } else { "No se ha podido borrar todo «OBS»." }.into(),
-        );
-        data.set_note_text(
-            if nombre == "hecho" {
-                "Vacía la papelera en «Limpiar» cuando quieras liberar el espacio."
-            } else {
-                "3 archivos están en uso por otro programa (38 GB se han enviado a la papelera; quedan 3,2 GB). \
-                 Cierra los programas que los usen y vuelve a intentarlo."
-            }
-            .into(),
-        );
+        data.set_subtitle(if nombre == "hecho" { "C: · 399 GB usados de 476 GB" } else { "C: · 412 GB usados de 476 GB" }.into());
+        data.set_note(i32::from(nombre == "hecho"));
+        data.set_note_title("Enviado a la papelera: boda_prima_4K.mov (12,8 GB).".into());
+        data.set_note_text("Vacía la papelera en «Limpiar» cuando quieras liberar el espacio.".into());
         data.set_can_undo(nombre == "hecho");
-        data.set_can_retry(nombre == "error");
         if nombre == "papelera" {
             modal.set_title("¿Enviar a la papelera?".into());
             modal.set_text("".into());
@@ -336,8 +314,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ..Default::default()
         };
         let mut uso = failed(&uso, false, true, false, false);
-        // La ruta y el tamaño los pone quien abre el aviso (decisión 10).
-        uso.lines = vec![("C:\\Users\\ana\\Videos\\OBS\\directo_aniversario.mkv".into(), "6,2 GB".into())];
+        // La ruta entera la pone quien abre el aviso (decisión 10).
+        uso.lines[0].0 = "C:\\Users\\ana\\Videos\\OBS\\directo_aniversario.mkv".into();
+        let permisos = Outcome {
+            names: vec!["Juegos viejos".into()],
+            failed: vec![fail("Juegos viejos", 8.7 * 1024.0, Reason::Denied)],
+            ..Default::default()
+        };
+        let mut permisos = failed(&permisos, false, true, false, true);
+        permisos.lines[0].0 = "C:\\Juegos viejos".into();
+        let noexiste = Outcome {
+            names: vec!["partida_ranked_03.mkv".into()],
+            left: (3.9 * 1024.0 * MB as f64) as u64,
+            missing: true,
+            ..Default::default()
+        };
+        let mut noexiste = failed(&noexiste, false, true, false, false);
+        noexiste.lines[0].0 = "C:\\Users\\ana\\Videos\\OBS\\partida_ranked_03.mkv".into();
+        let viejos = filas(
+            &[
+                ("folder", "Juegos viejos", "C:\\Juegos viejos", 8.7, "2 %", 0, ""),
+                ("folder", "Drivers", "C:\\Drivers", 1.9, "0 %", 1, ""),
+            ],
+            412.0,
+        );
         let parcial = Outcome {
             names: vec!["OBS".into()],
             sent: 38 << 30,
@@ -355,6 +355,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let solo_obs = filas(&[("folder", "OBS", "C:\\Users\\ana\\Videos\\OBS", 3.2, "100 %", 0, "")], 3.2);
         for (nombre, filas, migas, selected, n) in [
             ("aviso-uso", &obs, &["Este equipo", "C:", "Usuarios", "ana", "Vídeos", "OBS"][..], 2, uso),
+            ("aviso-permisos", &viejos, &["Este equipo", "C:"][..], 0, permisos),
+            ("aviso-noexiste", &obs, &["Este equipo", "C:", "Usuarios", "ana", "Vídeos", "OBS"][..], 3, noexiste),
             ("resultado-parcial", &solo_obs, &["Este equipo", "C:", "Usuarios", "ana", "Vídeos"][..], 0, parcial),
         ] {
             data.set_rows(filas.0.clone());

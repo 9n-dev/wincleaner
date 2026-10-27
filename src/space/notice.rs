@@ -246,6 +246,10 @@ pub fn failed(o: &Outcome, purge: bool, alt: bool, admin: bool, folder: bool) ->
         };
         let mut nt = Notice::new(title, "Se ha borrado o movido desde fuera de WinCleaner después del análisis. La lista ya está actualizada.");
         nt.close = "Aceptar";
+        // `left` es lo que ocupaba: sin él, solo el nombre.
+        if let [one] = o.names.as_slice() {
+            nt.lines = vec![(one.clone(), if o.left > 0 { bytes(o.left) } else { String::new() })];
+        }
         return nt;
     }
     let pid = o.users.first().map(|u| u.0);
@@ -253,7 +257,7 @@ pub fn failed(o: &Outcome, purge: bool, alt: bool, admin: bool, folder: bool) ->
         let f = &o.failed[0];
         // Con varios elegidos, «el elemento» es el que ha fallado.
         let n = if o.names.len() == 1 { name } else { f.name.as_str() };
-        let nt = match f.reason {
+        let mut nt = match f.reason {
             Reason::InUse => {
                 let who = o.users.first().map_or("Otro programa", |u| u.1.as_str());
                 let what = if folder { "algo de esta carpeta" } else { "este archivo" };
@@ -263,7 +267,7 @@ pub fn failed(o: &Outcome, purge: bool, alt: bool, admin: bool, folder: bool) ->
                 );
                 nt.left = Some(btn("Ir a Procesos", "pulse", Act::Procs(pid)));
                 nt.main = Some(btn("Reintentar", "refresh", Act::Retry));
-                return nt;
+                nt
             }
             Reason::Denied if !admin => Notice::new(
                 "Hacen falta permisos de administrador",
@@ -297,7 +301,7 @@ pub fn failed(o: &Outcome, purge: bool, alt: bool, admin: bool, folder: bool) ->
                     "Windows lo ha borrado sin pasar por la papelera: no se puede deshacer.",
                 );
                 nt.close = "Aceptar";
-                return nt;
+                nt
             }
             Reason::Other(c) => Notice::new(
                 format!("No se ha podido borrar «{n}»"),
@@ -305,6 +309,7 @@ pub fn failed(o: &Outcome, purge: bool, alt: bool, admin: bool, folder: bool) ->
             )
             .main("Reintentar", "refresh", Act::Retry),
         };
+        nt.lines = vec![(f.name.clone(), bytes(f.size))];
         return nt;
     }
 
@@ -724,6 +729,25 @@ mod tests {
         assert!(n.text.ends_with("La lista ya está actualizada."));
         let o = Outcome { names: vec!["a".into(), "b".into()], missing: true, ..Default::default() };
         assert_eq!(failed(&o, false, true, false, false).title, "Ya no estaban: 2 elementos");
+    }
+
+    #[test]
+    fn single_has_line() {
+        // Un solo fallo: una línea con lo que ha fallado y su tamaño, sea cual sea el motivo.
+        let all = [Reason::InUse, Reason::Denied, Reason::NoBin, Reason::Protected, Reason::Link, Reason::Changed, Reason::Purged, Reason::Other(5)];
+        for r in all {
+            assert_eq!(one(r).lines, [("a.mkv".to_string(), bytes(GB))], "{r:?}");
+        }
+        // Con varios elegidos, la del que ha fallado.
+        let o = Outcome { names: vec!["a".into(), "b".into()], sent: 2, left: 3, failed: vec![fail("b", 3, Reason::Denied)], ..Default::default() };
+        assert_eq!(failed(&o, false, false, false, false).lines, [("b".to_string(), bytes(3))]);
+        // Ya no está: con el tamaño si se sabe.
+        let o = Outcome { names: vec!["partida.mkv".into()], left: 3 * GB, missing: true, ..Default::default() };
+        assert_eq!(failed(&o, false, true, false, false).lines, [("partida.mkv".to_string(), bytes(3 * GB))]);
+        let o = Outcome { names: vec!["partida.mkv".into()], missing: true, ..Default::default() };
+        assert_eq!(failed(&o, false, true, false, false).lines, [("partida.mkv".to_string(), String::new())]);
+        let o = Outcome { names: vec!["a".into(), "b".into()], missing: true, ..Default::default() };
+        assert!(failed(&o, false, true, false, false).lines.is_empty());
     }
 
     #[test]

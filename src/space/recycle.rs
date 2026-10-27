@@ -67,6 +67,7 @@ pub struct Fail {
 pub struct Outcome {
     pub names: Vec<String>,
     pub sent: u64,
+    /// Lo que no se ha enviado: la suma de los fallos o, con `missing`, lo que ocupaba lo que ya no estaba.
     pub left: u64,
     pub failed: Vec<Fail>,
     /// Programas que tienen abierto lo que falló por estar en uso: `(pid, nombre)`.
