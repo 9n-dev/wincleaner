@@ -7,7 +7,10 @@ pub mod dups;
 pub mod installers;
 
 use tree::{Kind, Node};
-use zones::Block;
+use std::path::{Path, PathBuf};
+
+use crate::paths::is_valid;
+use zones::{Block, Lock};
 
 /// Filas que se pintan como mucho en una lista de Carpetas o de Duplicados: con miles, la
 /// ventana se congela y la memoria se dispara.
@@ -17,6 +20,53 @@ pub const MAX_ROWS: usize = 200;
 /// exacta y es una carpeta o un archivo de verdad (no un enlace, un `Rest` ni algo sin acceso).
 pub fn deletable(node: &Node, block: Option<Block>, zones_known: bool) -> bool {
     zones_known && block.is_none() && !node.odd && matches!(node.kind, Kind::Dir | Kind::File)
+}
+
+/// Por qué una fila no se puede borrar desde Carpetas. Solo explica: la puerta es `deletable`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Why {
+    NoZones,
+    Odd,
+    Link,
+    Denied,
+    Rest,
+    Zone(Lock),
+}
+
+pub fn why(node: &Node, lock: Option<Lock>, zones_known: bool) -> Option<Why> {
+    if !zones_known {
+        return Some(Why::NoZones);
+    }
+    if node.odd {
+        return Some(Why::Odd);
+    }
+    match node.kind {
+        Kind::Link => Some(Why::Link),
+        Kind::Denied => Some(Why::Denied),
+        Kind::Rest | Kind::Opened => Some(Why::Rest),
+        Kind::Dir | Kind::File => lock.map(Why::Zone),
+    }
+}
+
+/// Qué abrir en el Explorador.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Open {
+    Folder(PathBuf),
+    Select(PathBuf),
+}
+
+/// Solo se selecciona un archivo si `explorer.exe /select` lo entiende: ruta exacta y de menos de 260.
+pub fn explorer_target(path: &Path, is_dir: bool, odd: bool) -> Option<Open> {
+    let s = path.to_str()?;
+    if !is_valid(s) {
+        return None;
+    }
+    // Léxico, como las zonas: en Linux `Path::parent` no parte por `\`.
+    let parent = || s.rfind(['\\', '/']).map(|i| PathBuf::from(&s[..if i <= 2 { i + 1 } else { i }]));
+    if odd || (!is_dir && s.chars().count() >= 260) {
+        return parent().map(Open::Folder);
+    }
+    Some(if is_dir { Open::Folder(path.into()) } else { Open::Select(path.into()) })
 }
 
 #[cfg(test)]
@@ -51,5 +101,38 @@ mod tests {
         }
         // Sin zonas, nada se borra.
         assert!(!deletable(&node(Kind::File, false), None, false));
+    }
+
+    #[test]
+    fn why_agrees_with_deletable() {
+        let locks = [None, Some(Lock::Windows), Some(Lock::Known("Vídeos")), Some(Lock::Game), Some(Lock::SystemFile)];
+        for kind in [Kind::Dir, Kind::File, Kind::Rest, Kind::Opened, Kind::Denied, Kind::Link] {
+            for odd in [false, true] {
+                for l in locks {
+                    for zk in [false, true] {
+                        let n = node(kind, odd);
+                        assert_eq!(why(&n, l, zk).is_none(), deletable(&n, l.map(Lock::block), zk), "{kind:?} {odd} {l:?} {zk}");
+                    }
+                }
+            }
+        }
+        assert_eq!(why(&node(Kind::Link, false), None, true), Some(Why::Link));
+        assert_eq!(why(&node(Kind::Denied, true), None, true), Some(Why::Odd));
+        assert_eq!(why(&node(Kind::File, false), None, false), Some(Why::NoZones));
+    }
+
+    #[test]
+    fn explorer_target_rules() {
+        let p = PathBuf::from;
+        assert_eq!(explorer_target(&p(r"C:\a b,c\d"), true, false), Some(Open::Folder(p(r"C:\a b,c\d"))));
+        assert_eq!(explorer_target(&p(r"C:\"), true, false), Some(Open::Folder(p(r"C:\"))));
+        assert_eq!(explorer_target(&p(r"C:\a b,c\x.txt"), false, false), Some(Open::Select(p(r"C:\a b,c\x.txt"))));
+        let long = format!(r"C:\{}\x.txt", "a".repeat(260));
+        let up = format!(r"C:\{}", "a".repeat(260));
+        assert_eq!(explorer_target(&p(&long), false, false), Some(Open::Folder(p(&up))));
+        // Nombre no Unicode: la carpeta de arriba, que sí es exacta.
+        assert_eq!(explorer_target(&p(r"C:\a\x"), false, true), Some(Open::Folder(p(r"C:\a"))));
+        assert_eq!(explorer_target(&p(r"C:\a\x"), true, true), Some(Open::Folder(p(r"C:\a"))));
+        assert_eq!(explorer_target(&p("relativa"), true, false), None);
     }
 }

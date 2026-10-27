@@ -108,7 +108,7 @@ fn row(tree: &Tree, id: Id, i: usize, total: u64, zones: Option<&Zones>) -> Spac
     let n = tree.node(id);
     let path = tree.path(id);
     let block = match n.kind {
-        Kind::Rest => None,
+        Kind::Rest | Kind::Opened => None,
         _ => zones.and_then(|z| z.check(&path.to_string_lossy())),
     };
     let icon = match (n.kind, block) {
@@ -132,7 +132,7 @@ fn row(tree: &Tree, id: Id, i: usize, total: u64, zones: Option<&Zones>) -> Spac
             kind_label(kind(&n.name)),
             format::date_dmy(format::ymd(UNIX_EPOCH + Duration::from_secs(n.mtime.into())))
         ),
-        Kind::Rest => "Juntos".into(),
+        Kind::Rest | Kind::Opened => "Juntos".into(),
         _ => path.display().to_string(),
     };
     let denied = n.kind == Kind::Denied;
@@ -144,13 +144,13 @@ fn row(tree: &Tree, id: Id, i: usize, total: u64, zones: Option<&Zones>) -> Spac
         pct: if denied { "".into() } else { format::percent(n.size, total).into() },
         share: if total == 0 { 0.0 } else { (n.size as f64 / total as f64) as f32 },
         // Los cinco más grandes llevan su color de la tira; el `Rest` va con el resto.
-        color: if i < 5 && n.size > 0 && n.kind != Kind::Rest { i as i32 } else { 5 },
+        color: if i < 5 && n.size > 0 && !matches!(n.kind, Kind::Rest | Kind::Opened) { i as i32 } else { 5 },
         badge: badge.into(),
         // Un nombre no Unicode no da una ruta exacta: solo se ve.
         can_enter: n.can_enter(),
         can_delete: deletable(n, block, zones.is_some()),
         can_open: openable(n),
-        selectable: n.kind != Kind::Rest,
+        selectable: !matches!(n.kind, Kind::Rest | Kind::Opened),
     }
 }
 
@@ -193,7 +193,7 @@ fn lock_note(tree: &Tree, id: Id, zones: Option<&Zones>) -> Option<(String, Stri
                 "Apunta a otra carpeta: no suma a lo que ocupa esta y no se entra en él desde aquí.",
             );
         }
-        Kind::Rest | Kind::Denied => return None,
+        Kind::Rest | Kind::Opened | Kind::Denied => return None,
         Kind::Dir | Kind::File => {}
     }
     let Some(zones) = zones else {

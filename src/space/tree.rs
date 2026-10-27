@@ -17,6 +17,8 @@ pub enum Kind {
     File,
     /// «N archivos más pequeños»: N va en `len` y no tiene hijos.
     Rest,
+    /// `Rest` ya leído: sus archivos van en `first..first + len`.
+    Opened,
     /// Carpeta que no se pudo leer; su tamaño es desconocido.
     Denied,
     /// Enlace o junction: tamaño 0 y no se entra.
