@@ -30,7 +30,10 @@ pub enum Lock {
     Known(&'static str),
     Profile,
     HoldsKnown(&'static str),
+    /// El ejecutable de WinCleaner o su carpeta.
     Me,
+    /// Una carpeta que tiene dentro la de WinCleaner.
+    HoldsMe,
     Game,
     HoldsGames,
 }
@@ -41,7 +44,7 @@ impl Lock {
             Lock::Unclear | Lock::Drive | Lock::Windows | Lock::Programs | Lock::Bin | Lock::Users
                 | Lock::OtherUser => Block::Protected,
             Lock::SystemFile => Block::System,
-            Lock::Known(_) | Lock::Profile | Lock::HoldsKnown(_) | Lock::Me => Block::Known,
+            Lock::Known(_) | Lock::Profile | Lock::HoldsKnown(_) | Lock::Me | Lock::HoldsMe => Block::Known,
             Lock::Game | Lock::HoldsGames => Block::Game,
         }
     }
@@ -152,14 +155,17 @@ impl Zones {
         if same(path, &self.profile) {
             return Some(Lock::Profile);
         }
-        if [&self.exe, &self.exe_dir].into_iter().any(|k| same(path, k) || is_inside(k, path)) {
+        if [&self.exe, &self.exe_dir].into_iter().any(|k| same(path, k)) {
             return Some(Lock::Me);
+        }
+        if [&self.exe, &self.exe_dir].into_iter().any(|k| is_inside(k, path)) {
+            return Some(Lock::HoldsMe);
         }
         if let Some((_, l)) = self.known.iter().find(|(k, _)| is_inside(k, path)) {
             return Some(Lock::HoldsKnown(l));
         }
         if is_inside(&self.profile, path) {
-            return Some(Lock::HoldsKnown("tu perfil"));
+            return Some(Lock::HoldsKnown("de usuario"));
         }
         None
     }
@@ -359,6 +365,17 @@ mod tests {
         let known = vec![(r"C:\Users\ana\OneDrive\Documents".to_string(), "Documentos")];
         let z = Zones::new(&[r"C:\".into()], &[r"C:\Windows".into()], r"C:\Users\ana", &known, r"E:\w.exe", &[]);
         assert_eq!(z.lock(r"C:\Users\ana\OneDrive"), Some(Lock::HoldsKnown("Documentos")));
+    }
+
+    #[test]
+    fn holds_me_is_not_me() {
+        // Una carpeta cualquiera con WinCleaner dentro: no es WinCleaner, pero sigue sin borrarse.
+        let z = Zones::new(&[r"D:\".into()], &[], r"C:\Users\ana", &[], r"D:\Herramientas\wc\wincleaner.exe", &[]);
+        assert_eq!(z.lock(r"D:\Herramientas"), Some(Lock::HoldsMe));
+        assert_eq!(z.lock(r"D:\Herramientas\wc"), Some(Lock::Me));
+        assert_eq!(z.lock(r"D:\Herramientas\wc\wincleaner.exe"), Some(Lock::Me));
+        assert_eq!(z.check(r"D:\Herramientas"), Some(Block::Known));
+        assert_eq!(z.lock(r"D:\Herramientas\otra"), None);
     }
 
     #[test]

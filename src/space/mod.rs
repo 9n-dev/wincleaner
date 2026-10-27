@@ -13,8 +13,8 @@ use std::path::{Path, PathBuf};
 use crate::paths::is_valid;
 use zones::{Block, Lock};
 
-/// Filas que se pintan como mucho en una lista de Carpetas o de Duplicados: con miles, la
-/// ventana se congela y la memoria se dispara.
+/// Filas que se pintan como mucho en la lista de Duplicados, que no está virtualizada: con
+/// miles, la ventana se congela y la memoria se dispara. Carpetas no tiene tope.
 pub const MAX_ROWS: usize = 200;
 
 /// La fila se puede borrar desde Carpetas: se conocen las zonas, no cae en ninguna, la ruta es

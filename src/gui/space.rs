@@ -71,6 +71,9 @@ struct State {
     /// Sube cada vez que un borrado, un «Deshacer» o `forget` cambian los árboles: una lectura
     /// empezada antes ya no cuadra con el árbol y se repite.
     rev: u64,
+    /// Hay un borrado o un «Deshacer» de Espacio en marcha: una lectura que vuelve entonces no
+    /// sabe qué queda, así que se descarta y `repaint` la repite al acabar.
+    busy: bool,
     last: Last,
     /// Lo que hace quien pidió el borrado en curso, al volver.
     after: Option<After>,
@@ -129,7 +132,7 @@ fn badge(lock: Option<Lock>, kind: Kind) -> (&'static str, &'static str) {
         (_, Some(Lock::Programs)) => ("Programa", "apps"),
         (_, Some(Lock::Known(_) | Lock::Profile | Lock::HoldsKnown(_))) => ("Carpeta de Windows", "lock"),
         (_, Some(Lock::SystemFile)) => ("Sistema", ""),
-        (_, Some(Lock::Me)) => ("WinCleaner", "lock"),
+        (_, Some(Lock::Me | Lock::HoldsMe)) => ("WinCleaner", "lock"),
         (_, Some(Lock::Unclear | Lock::Drive | Lock::Windows | Lock::Bin | Lock::Users | Lock::OtherUser)) => ("Protegida", "lock"),
         (_, None) => ("", ""),
     }
@@ -378,7 +381,8 @@ fn read(app: &AppWindow, dir: PathBuf) {
 
 /// Vuelve la lectura: si sigue siendo la de la carpeta que se ve, cuelga los archivos y la pinta.
 /// Si no se pudo leer, se ve tal cual, con su `Rest`. Si el árbol cambió mientras se leía (un
-/// borrado, «Deshacer»), lo leído puede no cuadrar: se descarta y se vuelve a leer.
+/// borrado, «Deshacer»), lo leído puede no cuadrar: se descarta y se vuelve a leer (si el
+/// borrado sigue en marcha, al acabar).
 fn read_done(app: &AppWindow, cancel: &Arc<AtomicBool>, at: At, cur: Id, files: Option<Vec<tree::Entry>>) {
     enum Then {
         Nothing,
@@ -388,6 +392,9 @@ fn read_done(app: &AppWindow, cancel: &Arc<AtomicBool>, at: At, cur: Id, files: 
     let then = STATE.with_borrow_mut(|st| {
         let Some((.., rev)) = st.reading.take_if(|r| Arc::ptr_eq(&r.0, cancel)) else { return Then::Nothing };
         if here(st) != Some(at) || st.cur != cur {
+            return Then::Nothing;
+        }
+        if st.busy {
             return Then::Nothing;
         }
         if rev != st.rev {
@@ -423,6 +430,8 @@ fn repaint(app: &AppWindow) {
             units(app);
             paint(app);
         }
+        // Una lectura descartada durante un borrado se repite.
+        3 if STATE.with_borrow(|st| st.reading.is_none()) => show(app),
         _ => {}
     }
 }
@@ -951,6 +960,7 @@ impl Space {
         STATE.with_borrow_mut(|st| {
             st.last = Last { retry, purge: alt, ..Last::default() };
             st.after = Some(after);
+            st.busy = true;
         });
         app.global::<SpaceData>().set_note(0);
         app.set_locked(true);
@@ -966,6 +976,7 @@ impl Space {
         // En el árbol de la unidad de cada elemento, si está analizada (no tiene por qué ser la que se ve).
         let after = STATE.with_borrow_mut(|st| {
             st.rev += 1;
+            st.busy = false;
             for (p, t) in scans {
                 if let Some((_, tree)) = tree_of(&mut st.trees, &p)
                     && let Some(id) = tree.find(&p)
@@ -1021,6 +1032,7 @@ impl Space {
         if binned.is_empty() {
             return;
         }
+        STATE.with_borrow_mut(|st| st.busy = true);
         app.global::<SpaceData>().set_note(0);
         app.set_locked(true);
         let k = self.clone();
@@ -1033,6 +1045,7 @@ impl Space {
     fn undone(app: &AppWindow, names: Vec<String>, ids: Vec<(At, PathBuf, Id)>, failed: Vec<PathBuf>) {
         STATE.with_borrow_mut(|st| {
             st.rev += 1;
+            st.busy = false;
             for (at, p, id) in ids {
                 if !failed.contains(&p)
                     && let Some(tree) = tree_at(&mut st.trees, &Some(at))

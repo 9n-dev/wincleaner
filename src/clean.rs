@@ -127,9 +127,9 @@ pub fn delete(cat: &Category, scan: &ScanResult, now: SystemTime) -> DeleteRepor
     }
     for dir in &scan.dirs {
         #[cfg(windows)]
-        handle::remove_dir(dir, &roots, &finals);
+        let _ = handle::remove_dir(dir, &roots, &finals);
         #[cfg(not(windows))]
-        remove_dir(dir, &roots);
+        let _ = remove_dir(dir, &roots);
     }
     rep
 }
@@ -218,26 +218,33 @@ fn purge_apply(target: &Path, mut failed: Failed, files: &[(PathBuf, u64)], dirs
         match freed {
             Ok(Some(n)) => rep.freed += n,
             Ok(None) => {}
-            Err(Skip(code)) => {
-                // Sin código: lo para una regla; si ahora es un enlace (cambiado tras mirar), se dice.
-                let link = code.is_none() && std::fs::symlink_metadata(path).is_ok_and(|md| is_link(&md));
-                failed.push((path.clone(), *size, if link { Reason::Link } else { os_reason(code) }));
-            }
+            Err(Skip(code)) => failed.push((path.clone(), *size, skip_reason(path, code))),
         }
     }
+    // La primera carpeta que no se ha podido quitar (la más honda): las de arriba fallan por no estar vacías.
+    let mut stuck = None;
     for dir in dirs {
         let roots: &[PathBuf] = if dir == target { &outer } else { &inner };
         #[cfg(windows)]
-        handle::remove_dir(dir, roots, if dir == target { &outer_finals } else { &inner_finals });
+        let r = handle::remove_dir(dir, roots, if dir == target { &outer_finals } else { &inner_finals });
         #[cfg(not(windows))]
-        remove_dir(dir, roots);
+        let r = remove_dir(dir, roots);
+        if let (Err(code), None) = (r, &stuck) {
+            stuck = Some((dir.clone(), 0, skip_reason(dir, code)));
+        }
     }
-    // Sigue en pie sin que nada lo explique (p. ej. una carpeta que no se pudo vaciar).
+    // Sigue en pie sin un archivo que lo explique: se dice qué carpeta y por qué (p. ej. en uso).
     if failed.is_empty() && std::fs::symlink_metadata(target).is_ok() {
-        failed.push((target.to_path_buf(), 0, Reason::Other(0)));
+        failed.push(stuck.unwrap_or((target.to_path_buf(), 0, Reason::Other(0))));
     }
     rep.failed = failed;
     rep
+}
+
+/// Motivo de un salto: sin código lo para una regla; si ahora es un enlace (cambiado tras mirar), se dice.
+fn skip_reason(path: &Path, code: Option<i32>) -> Reason {
+    let link = code.is_none() && std::fs::symlink_metadata(path).is_ok_and(|md| is_link(&md));
+    if link { Reason::Link } else { os_reason(code) }
 }
 
 /// Ruta final (`C:\…`) de `path`, abierto sin seguir un enlace en el último componente.
@@ -246,11 +253,18 @@ pub fn final_path_of(path: &Path) -> Option<String> {
     handle::final_path_of(path)
 }
 
-/// Borra `dir` si está vacía; si no, falla y se ignora.
+/// Borra `dir` si está vacía. `Err` lleva el código del sistema, o `None` si la para una regla.
 #[cfg(not(windows))]
-fn remove_dir(dir: &Path, roots: &[PathBuf]) {
-    if safe_to_touch(dir, roots) && std::fs::symlink_metadata(dir).is_ok_and(|md| md.is_dir() && !is_link(&md)) {
-        let _ = std::fs::remove_dir(dir);
+fn remove_dir(dir: &Path, roots: &[PathBuf]) -> Result<(), Option<i32>> {
+    match std::fs::symlink_metadata(dir) {
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.raw_os_error()),
+        Ok(md) if !md.is_dir() || is_link(&md) || !safe_to_touch(dir, roots) => return Err(None),
+        Ok(_) => {}
+    }
+    match std::fs::remove_dir(dir) {
+        Err(e) if e.kind() != ErrorKind::NotFound => Err(e.raw_os_error()),
+        _ => Ok(()),
     }
 }
 
@@ -422,15 +436,22 @@ mod handle {
         if mark_deleted(&f) { Ok(Some(md.len())) } else { Err(Skip(std::io::Error::last_os_error().raw_os_error())) }
     }
 
-    /// Borra `dir` si está vacía; si no, falla y se ignora.
-    pub fn remove_dir(dir: &Path, roots: &[PathBuf], finals: &[String]) {
+    /// Borra `dir` si está vacía. `Err` lleva el código del sistema (32 si es la carpeta actual
+    /// de una consola), o `None` si la para una regla.
+    pub fn remove_dir(dir: &Path, roots: &[PathBuf], finals: &[String]) -> Result<(), Option<i32>> {
         if !in_any_root(dir, roots) {
-            return;
+            return Err(None);
         }
-        let Ok(f) = open(dir, DELETE | FILE_READ_ATTRIBUTES) else { return };
-        if f.metadata().is_ok_and(|md| md.is_dir() && !is_link(&md)) && inside(&f, finals) {
-            mark_deleted(&f);
+        let f = match open(dir, DELETE | FILE_READ_ATTRIBUTES) {
+            Ok(f) => f,
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e.raw_os_error()),
+        };
+        let md = f.metadata().map_err(|e| e.raw_os_error())?;
+        if !md.is_dir() || is_link(&md) || !inside(&f, finals) {
+            return Err(None);
         }
+        if mark_deleted(&f) { Ok(()) } else { Err(std::io::Error::last_os_error().raw_os_error()) }
     }
 }
 
@@ -793,5 +814,24 @@ mod tests {
         assert!(out.join("keep.bin").exists());
         let _ = fs::remove_dir_all(&root);
         let _ = fs::remove_dir_all(&out);
+    }
+
+    // Sin fallos de archivos, la carpeta que no se puede quitar sale con el error real, no con 0.
+    #[cfg(unix)]
+    #[test]
+    fn purge_reports_stuck_dir_with_os_error() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = temp_dir("pg-stuck");
+        let t = root.join("t");
+        fs::create_dir_all(t.join("sub")).unwrap();
+        fs::set_permissions(&t, fs::Permissions::from_mode(0o500)).unwrap();
+        // Como root el modo 500 no impide borrar.
+        let as_root = fs::create_dir(t.join("prueba")).is_ok();
+        let p = purge(&t);
+        let _ = fs::set_permissions(&t, fs::Permissions::from_mode(0o755));
+        if !as_root {
+            assert_eq!(p.failed, vec![(t.join("sub"), 0, Reason::Other(13))]);
+        }
+        let _ = fs::remove_dir_all(&root);
     }
 }

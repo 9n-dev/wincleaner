@@ -15,5 +15,7 @@ fn listview_100k_rows_renders_fast() {
     d.set_phase(2);
     let start = std::time::Instant::now();
     headless::render(app.window(), 1100, 720);
-    assert!(start.elapsed() < std::time::Duration::from_millis(500), "{:?}", start.elapsed());
+    // Virtualizada tarda 0,1–0,3 s; sin virtualizar, 100 000 filas tardaban unos 30 s. Con 3 s
+    // de tope la prueba no falla por una máquina cargada o una compilación de depuración.
+    assert!(start.elapsed() < std::time::Duration::from_secs(3), "{:?}", start.elapsed());
 }

@@ -189,6 +189,11 @@ pub fn locked(why: Why, c: &Ctx) -> Notice {
             Notice::new(format!("{n} es un archivo del sistema"), text)
         }
         Why::Zone(Lock::Me) => Notice::new("Es WinCleaner", "No se puede borrar mientras está abierto. Ciérralo y bórralo desde el Explorador."),
+        Why::Zone(Lock::HoldsMe) => enter(
+            format!("{n} no se puede borrar"),
+            "Dentro está WinCleaner, que está abierto. Entra y borra lo que no necesites.",
+            n,
+        ),
         Why::Zone(Lock::Drive | Lock::Unclear) | Why::Rest => Notice::new(
             "WinCleaner no puede comprobar esta ruta",
             "Windows puede leerla de varias maneras, así que, por seguridad, no se borra desde aquí. \
@@ -496,6 +501,25 @@ mod tests {
         let n = zone(Lock::Me, "wincleaner.exe", r"C:\x\wincleaner.exe");
         assert_eq!(n.title, "Es WinCleaner");
         assert!(n.text.ends_with("Ciérralo y bórralo desde el Explorador.") && n.main.is_none());
+    }
+
+    #[test]
+    fn holds_me_offers_enter() {
+        let n = zone(Lock::HoldsMe, "Herramientas", r"D:\Herramientas");
+        assert_eq!(n.title, "Herramientas no se puede borrar");
+        assert_eq!(n.text, "Dentro está WinCleaner, que está abierto. Entra y borra lo que no necesites.");
+        assert_eq!(n.lines, [(r"D:\Herramientas".to_string(), "118 GB".to_string())]);
+        assert_eq!(n.close, "Cerrar");
+        let b = n.main.unwrap();
+        assert_eq!((b.text.as_str(), b.icon, b.act), ("Entrar en Herramientas", "folder", Act::Enter));
+        let c = Ctx { can_enter: false, ..ctx("Herramientas", r"D:\Herramientas") };
+        assert!(locked(Why::Zone(Lock::HoldsMe), &c).main.is_none());
+    }
+
+    #[test]
+    fn holds_profile_reads_well() {
+        let n = zone(Lock::HoldsKnown("de usuario"), "datos", r"D:\datos");
+        assert_eq!(n.text, "Dentro está tu carpeta de usuario, que Windows necesita. Entra y borra lo que no quieras.");
     }
 
     #[test]
