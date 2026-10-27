@@ -49,6 +49,24 @@ pub fn why(node: &Node, lock: Option<Lock>, zones_known: bool) -> Option<Why> {
     }
 }
 
+/// «4 carpetas y 1 284 archivos · 41,2 GB»: lo que hay en la carpeta. `size` va fuera de la
+/// raíz (en la raíz ya lo dice el subtítulo).
+pub fn count_text(dirs: u64, files: u64, size: Option<u64>) -> String {
+    let n = |k: u64, one: &str, many: &str| if k == 1 { format!("1 {one}") } else { format!("{} {many}", crate::format::count(k)) };
+    let mut parts = Vec::new();
+    if dirs > 0 {
+        parts.push(n(dirs, "carpeta", "carpetas"));
+    }
+    if files > 0 {
+        parts.push(n(files, "archivo", "archivos"));
+    }
+    let mut s = parts.join(" y ");
+    if let Some(b) = size {
+        s.push_str(&format!(" · {}", crate::format::bytes(b)));
+    }
+    s
+}
+
 /// Qué abrir en el Explorador.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Open {
@@ -120,6 +138,15 @@ mod tests {
         assert_eq!(why(&node(Kind::Link, false), None, true), Some(Why::Link));
         assert_eq!(why(&node(Kind::Denied, true), None, true), Some(Why::Odd));
         assert_eq!(why(&node(Kind::File, false), None, false), Some(Why::NoZones));
+    }
+
+    #[test]
+    fn count_texts() {
+        assert_eq!(count_text(9, 6, None), "9 carpetas y 6 archivos");
+        assert_eq!(count_text(4, 1284, Some(44_258_525_184)), "4 carpetas y 1 284 archivos · 41,2 GB");
+        assert_eq!(count_text(1, 1, None), "1 carpeta y 1 archivo");
+        assert_eq!(count_text(0, 3, None), "3 archivos");
+        assert_eq!(count_text(2, 0, None), "2 carpetas");
     }
 
     #[test]

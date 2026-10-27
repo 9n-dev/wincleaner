@@ -576,7 +576,7 @@ impl Security {
             }
             Action::OpenLocation(p) => {
                 if Path::new(&p).is_absolute() {
-                    win::open_in_explorer(Path::new(&p));
+                    win::open_in_explorer(Path::new(&p), false, false);
                 }
             }
             // Solo el nombre del archivo, nunca la ruta (lleva el nombre de usuario).

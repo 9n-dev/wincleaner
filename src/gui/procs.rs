@@ -167,7 +167,7 @@ impl Procs {
             STATE.with_borrow(|st| {
                 let exe = usize::try_from(i).ok().and_then(|i| st.groups.get(i)?.exe.clone());
                 if let Some(exe) = exe.filter(|e| Path::new(e).is_absolute()) {
-                    win::open_in_explorer(Path::new(&exe));
+                    win::open_in_explorer(Path::new(&exe), false, false);
                 }
             });
         });

@@ -5,18 +5,19 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
-use slint::{ComponentHandle, ModelRc, Timer, TimerMode, VecModel, Weak};
+use slint::{ComponentHandle, Model, ModelNotify, ModelRc, ModelTracker, SharedString, Timer, TimerMode, VecModel, Weak};
 use wincleaner::categories::is_link;
-use wincleaner::space::deletable;
+use wincleaner::paths::strip_verbatim;
 use wincleaner::space::dups::{kind, kind_label};
-use wincleaner::space::notice;
+use wincleaner::space::notice::{self, Ctx};
 use wincleaner::space::recycle::{Fail, Outcome, Reason, done_text, outermost, undo_text};
-use wincleaner::space::tree::{Id, Kind, Node, Tree};
-use wincleaner::space::zones::{Block, Zones};
+use wincleaner::space::tree::{self, Id, Kind, Node, Tree, read_files};
+use wincleaner::space::zones::{Block, Lock, Zones};
+use wincleaner::space::{count_text, deletable, why};
 use wincleaner::ui::{self, AppWindow, Confirm, DriveItem, ModalLine, SpaceData, SpaceRow, StripPart, confirm_with_alt};
 use wincleaner::{clean, format};
 
@@ -59,6 +60,8 @@ struct State {
     timer: Option<Timer>,
     /// Refresca «analizado hace X min» cada minuto.
     clock: Timer,
+    /// Hay una carpeta leyéndose al entrar: `true` en su `cancel` la detiene; el `Timer` pinta la cuenta.
+    reading: Option<(Arc<AtomicBool>, Timer)>,
     last: Last,
     /// Lo que hace quien pidió el borrado en curso, al volver.
     after: Option<After>,
@@ -98,45 +101,73 @@ fn name(tree: &Tree, id: Id, zones: Option<&Zones>) -> String {
     label.map_or_else(|| if id == tree.root() { n.trim_end_matches('\\') } else { n }.to_string(), Into::into)
 }
 
-/// Se puede abrir en el Explorador: una carpeta o un archivo de verdad con la ruta exacta
-/// (aunque sea solo para ver; abrir nunca borra).
-fn openable(n: &Node) -> bool {
-    matches!(n.kind, Kind::Dir | Kind::File) && !n.odd
+/// Zona en la que cae la fila; un `Rest` no tiene ruta propia.
+fn lock_of(n: &Node, path: &Path, zones: Option<&Zones>) -> Option<Lock> {
+    if matches!(n.kind, Kind::Rest | Kind::Opened) {
+        return None;
+    }
+    zones.and_then(|z| z.lock(&path.to_string_lossy()))
+}
+
+/// La pastilla de la fila y su icono (decisión 12).
+fn badge(lock: Option<Lock>, kind: Kind) -> (&'static str, &'static str) {
+    match (kind, lock) {
+        (Kind::Link, _) => ("Enlace", "link"),
+        (Kind::Denied, _) => ("Sin acceso", "lock"),
+        (_, Some(Lock::Game)) => ("Juego", "game"),
+        (_, Some(Lock::HoldsGames)) => ("Juegos", "game"),
+        (_, Some(Lock::Programs)) => ("Programa", "apps"),
+        (_, Some(Lock::Known(_) | Lock::Profile | Lock::HoldsKnown(_))) => ("Carpeta de Windows", "lock"),
+        (_, Some(Lock::SystemFile)) => ("Sistema", ""),
+        (_, Some(Lock::Me)) => ("WinCleaner", "lock"),
+        (_, Some(Lock::Unclear | Lock::Drive | Lock::Windows | Lock::Bin | Lock::Users | Lock::OtherUser)) => ("Protegida", "lock"),
+        (_, None) => ("", ""),
+    }
 }
 
 /// Fila `i` (por tamaño) de una carpeta que ocupa `total`.
 fn row(tree: &Tree, id: Id, i: usize, total: u64, zones: Option<&Zones>) -> SpaceRow {
     let n = tree.node(id);
     let path = tree.path(id);
-    let block = match n.kind {
-        Kind::Rest | Kind::Opened => None,
-        _ => zones.and_then(|z| z.check(&path.to_string_lossy())),
-    };
-    let icon = match (n.kind, block) {
+    let lock = lock_of(n, &path, zones);
+    let (pill, pill_icon) = badge(lock, n.kind);
+    let icon = match (n.kind, lock) {
         (Kind::Link, _) => "link",
-        (Kind::Denied, _) | (_, Some(Block::Protected)) => "lock",
-        (_, Some(Block::Game)) => "game",
+        (Kind::Denied, _) => "lock",
+        (_, Some(Lock::Programs)) => "apps",
+        (_, Some(l)) if l.block() == Block::Protected => "lock",
+        (_, Some(Lock::Game | Lock::HoldsGames)) => "game",
         (Kind::Dir, _) => "folder",
         _ => "file",
     };
-    let badge = match (n.kind, block) {
-        (Kind::Link, _) => "Enlace",
-        (Kind::Denied, _) => "Sin acceso",
-        (_, Some(Block::Protected)) => "Protegida",
-        (_, Some(Block::System)) => "Sistema",
-        (_, Some(Block::Game)) => "Juegos",
-        _ => "",
+    // Los archivos de sistema de la raíz dicen qué son.
+    let system = match n.name.to_lowercase().as_str() {
+        _ if lock != Some(Lock::SystemFile) => None,
+        "pagefile.sys" => Some("Memoria virtual de Windows"),
+        "hiberfil.sys" => Some("Archivo de hibernación de Windows"),
+        "swapfile.sys" => Some("Archivo de intercambio de Windows"),
+        _ => None,
     };
-    let sub = match n.kind {
-        Kind::File => format!(
+    let sub = match (n.kind, system) {
+        (_, Some(s)) => s.into(),
+        (Kind::File, _) => format!(
             "{} · {}",
             kind_label(kind(&n.name)),
             format::date_dmy(format::ymd(UNIX_EPOCH + Duration::from_secs(n.mtime.into())))
         ),
-        Kind::Rest | Kind::Opened => "Juntos".into(),
-        _ => path.display().to_string(),
+        (Kind::Rest | Kind::Opened, _) => "Juntos".into(),
+        // Sin seguirlo: solo se lee a dónde apunta.
+        (Kind::Link, _) => match std::fs::read_link(&path) {
+            Ok(to) => {
+                let to = to.to_string_lossy();
+                format!("{} → {}", path.display(), strip_verbatim(&to).unwrap_or(&to))
+            }
+            Err(_) => path.display().to_string(),
+        },
+        (Kind::Dir | Kind::Denied, _) => path.display().to_string(),
     };
     let denied = n.kind == Kind::Denied;
+    let real = !matches!(n.kind, Kind::Rest | Kind::Opened);
     SpaceRow {
         icon: icon.into(),
         name: name(tree, id, zones).into(),
@@ -145,80 +176,44 @@ fn row(tree: &Tree, id: Id, i: usize, total: u64, zones: Option<&Zones>) -> Spac
         pct: if denied { "".into() } else { format::percent(n.size, total).into() },
         share: if total == 0 { 0.0 } else { (n.size as f64 / total as f64) as f32 },
         // Los cinco más grandes llevan su color de la tira; el `Rest` va con el resto.
-        color: if i < 5 && n.size > 0 && !matches!(n.kind, Kind::Rest | Kind::Opened) { i as i32 } else { 5 },
-        badge: badge.into(),
+        color: if i < 5 && n.size > 0 && real { i as i32 } else { 5 },
+        badge: pill.into(),
+        badge_icon: pill_icon.into(),
         // Un nombre no Unicode no da una ruta exacta: solo se ve.
         can_enter: n.can_enter(),
-        can_delete: deletable(n, block, zones.is_some()),
-        can_open: openable(n),
-        selectable: !matches!(n.kind, Kind::Rest | Kind::Opened),
+        // El Explorador decide qué abrir (`space::explorer_target`); abrir nunca borra.
+        can_open: real,
+        selectable: real,
     }
 }
 
-/// Nota sobre la lista al elegir la fila `id` si no se puede borrar: (título, texto).
-fn lock_note(tree: &Tree, id: Id, zones: Option<&Zones>) -> Option<(String, String)> {
-    let n = tree.node(id);
-    let name = name(tree, id, zones);
-    let note = |t: String, x: &str| Some((t, x.to_string()));
-    if n.odd {
-        return note(
-            format!("No se puede leer bien el nombre de «{name}»."),
-            "Tiene caracteres que Windows no deja leer tal cual. Puedes verlo, pero no borrarlo ni entrar desde aquí, para no equivocarte de archivo.",
-        );
+/// Filas de la carpeta que se ve, construidas al vuelo: Slint solo pide las visibles.
+struct Rows {
+    ids: Vec<Id>,
+    total: u64,
+    notify: ModelNotify,
+}
+
+impl Model for Rows {
+    type Data = SpaceRow;
+
+    fn row_count(&self) -> usize {
+        self.ids.len()
     }
-    match n.kind {
-        Kind::Link => {
-            return note(
-                format!("{name} es un enlace."),
-                "Apunta a otra carpeta: no suma a lo que ocupa esta y no se entra en él desde aquí.",
-            );
-        }
-        Kind::Rest | Kind::Opened | Kind::Denied => return None,
-        Kind::Dir | Kind::File => {}
+
+    /// Solo lee `STATE`: nunca se pide desde dentro de un `with_borrow_mut`. Si el árbol ya no
+    /// es el de estas filas (otra carpeta, otro análisis), da una fila vacía.
+    fn row_data(&self, i: usize) -> Option<SpaceRow> {
+        let &id = self.ids.get(i)?;
+        let r = STATE.with_borrow(|st| {
+            let (tree, _) = st.trees.get(&st.root)?;
+            (st.kids.get(i) == Some(&id)).then(|| row(tree, id, i, self.total, st.zones.as_ref()))
+        });
+        Some(r.unwrap_or_default())
     }
-    let Some(zones) = zones else {
-        return note(
-            "No se puede borrar nada desde aquí.".into(),
-            "WinCleaner no ha podido saber qué carpetas de Windows tiene que proteger, así que por seguridad todo es solo para ver.",
-        );
-    };
-    let path = tree.path(id).to_string_lossy().into_owned();
-    match zones.check(&path)? {
-        Block::Protected => {
-            // La primera carpeta con nombre propio del camino dice de qué zona es.
-            let zone = tree.crumbs(id).into_iter().find_map(|c| zones.label(&tree.path(c).to_string_lossy()));
-            let why = match zone {
-                Some("Windows") => {
-                    "Puedes ver qué ocupa, pero no borrarla desde aquí: romperías el sistema. Para liberar espacio de Windows usa «Limpiar»."
-                }
-                Some(z) if z.starts_with("Archivos de programa") => {
-                    "Puedes ver qué ocupa, pero no borrarla desde aquí: los programas dejarían de funcionar. Para quitar un programa usa «Programas»."
-                }
-                _ => "Puedes ver qué ocupa, pero no borrarla desde aquí: Windows o tus programas la necesitan.",
-            };
-            note(format!("{name} está protegida."), why)
-        }
-        Block::Known if n.kind == Kind::File => note(format!("{name} es WinCleaner."), "No se puede borrar mientras lo usas."),
-        Block::Known => note(
-            format!("{name} no se puede borrar."),
-            "Es una carpeta que Windows o WinCleaner necesitan. Lo que hay dentro sí: entra y elige qué borrar.",
-        ),
-        Block::System if n.name.to_lowercase().starts_with("boot") => {
-            note(format!("{name} es un archivo del sistema."), "Windows lo necesita para arrancar.")
-        }
-        Block::System => note(
-            format!("{name} es un archivo del sistema."),
-            "Windows lo usa y lo vuelve a crear. Para que ocupe menos, cambia la memoria virtual o la hibernación en la configuración de Windows.",
-        ),
-        // Lleva un juego dentro (la biblioteca de Steam, `Program Files (x86)`…), pero no es uno.
-        Block::Game if !zones.in_game(&path) => note(
-            format!("{name} tiene juegos dentro."),
-            "Si la borras, los lanzadores seguirían creyendo que están instalados. Desinstálalos desde la pestaña Juegos.",
-        ),
-        Block::Game => note(
-            format!("{name} es de un juego."),
-            "Si la borras, el lanzador seguiría creyendo que está instalado. Desinstálalo desde la pestaña Juegos.",
-        ),
+
+    fn model_tracker(&self) -> &dyn ModelTracker {
+        &self.notify
     }
 }
 
@@ -256,37 +251,138 @@ fn units(app: &AppWindow) {
     data.set_phase(0);
 }
 
-/// La carpeta `STATE.cur` de la unidad `STATE.root`; sin análisis, las unidades.
+/// Migas de la carpeta `cur`: «Este equipo», la raíz y sus carpetas.
+fn crumbs(tree: &Tree, cur: Id, zones: Option<&Zones>) -> Vec<SharedString> {
+    let mut v = vec!["Este equipo".into()];
+    v.extend(tree.crumbs(cur).into_iter().map(|c| name(tree, c, zones).into()));
+    v
+}
+
+/// La carpeta `STATE.cur` de la unidad `STATE.root`; sin análisis, las unidades. Si le faltan
+/// archivos (tiene un `Rest`), antes los lee en un hilo.
 fn show(app: &AppWindow) {
+    let dir = STATE.with_borrow(|st| {
+        let (tree, _) = st.trees.get(&st.root)?;
+        tree.needs_read(st.cur).then(|| tree.path(st.cur))
+    });
+    match dir {
+        Some(dir) => read(app, dir),
+        None => paint(app),
+    }
+}
+
+/// Pinta la carpeta `STATE.cur` tal como está en el árbol, sin leer nada.
+fn paint(app: &AppWindow) {
     let view = STATE.with_borrow_mut(|st| {
         let State { trees, root, cur, kids, zones, .. } = st;
         let (tree, _) = trees.get(root)?;
         let zones = zones.as_ref();
         *kids = tree.children(*cur);
         let total = tree.node(*cur).size;
-        let rows: Vec<SpaceRow> = kids.iter().enumerate().map(|(i, &id)| row(tree, id, i, total, zones)).collect();
-        let mut strip: Vec<StripPart> =
-            rows.iter().filter(|r| r.color < 5).map(|r| StripPart { label: r.name.clone(), share: r.share, color: r.color }).collect();
+        // La tira sale de las cinco primeras filas; las demás se piden al pintarse.
+        let mut strip: Vec<StripPart> = kids
+            .iter()
+            .take(5)
+            .enumerate()
+            .map(|(i, &id)| row(tree, id, i, total, zones))
+            .filter(|r| r.color < 5)
+            .map(|r| StripPart { label: r.name, share: r.share, color: r.color })
+            .collect();
         let rest = 1.0 - strip.iter().map(|p| p.share).sum::<f32>();
         if !strip.is_empty() && rest > 0.001 {
             strip.push(StripPart { label: "Resto".into(), share: rest, color: 5 });
         }
-        let mut crumbs = vec!["Este equipo".into()];
-        crumbs.extend(tree.crumbs(*cur).into_iter().map(|c| name(tree, c, zones).into()));
+        let (mut dirs, mut files) = (0, 0);
+        for &k in kids.iter() {
+            match tree.node(k).kind {
+                Kind::Dir | Kind::Denied | Kind::Link => dirs += 1,
+                Kind::File => files += 1,
+                // Un `Rest` sin leer cuenta sus archivos.
+                Kind::Rest | Kind::Opened => files += u64::from(tree.node(k).len),
+            }
+        }
+        let count = count_text(dirs, files, (*cur != tree.root()).then_some(total));
         let denied = kids.iter().any(|&k| tree.node(k).kind == Kind::Denied && !tree.node(k).odd);
-        Some((rows, strip, crumbs, denied, subtitle(st)))
+        let rows = Rows { ids: kids.clone(), total, notify: ModelNotify::default() };
+        Some((rows, strip, crumbs(tree, *cur, zones), denied, count, subtitle(st)))
     });
-    let Some((rows, strip, crumbs, denied, sub)) = view else { return units(app) };
+    let Some((rows, strip, crumbs, denied, count, sub)) = view else { return units(app) };
     let data = app.global::<SpaceData>();
-    data.set_rows(model(rows));
+    data.set_rows(ModelRc::new(rows));
     data.set_strip(model(strip));
     data.set_crumbs(model(crumbs));
     data.set_denied(denied);
+    data.set_count(count.into());
     data.set_selected(-1);
-    data.set_lock_title("".into());
-    data.set_lock_text("".into());
     data.set_subtitle(sub.into());
     data.set_phase(2);
+}
+
+/// Detiene la lectura en marcha, si hay: su resultado se descarta.
+fn stop_reading(st: &mut State) {
+    if let Some((c, _)) = st.reading.take() {
+        c.store(true, Ordering::Relaxed);
+    }
+}
+
+/// «Leyendo la carpeta…»: lee en un hilo los archivos de `dir` (la carpeta `STATE.cur`) y, al
+/// volver, los cuelga del árbol. Mientras, no hay filas: no se puede borrar nada.
+fn read(app: &AppWindow, dir: PathBuf) {
+    let cancel = Arc::new(AtomicBool::new(false));
+    let seen = Arc::new(AtomicU64::new(0));
+    let timer = Timer::default();
+    let (weak, n) = (app.as_weak(), Arc::clone(&seen));
+    timer.start(TimerMode::Repeated, Duration::from_millis(200), move || {
+        if let Some(app) = weak.upgrade() {
+            let n = n.load(Ordering::Relaxed);
+            app.global::<SpaceData>().set_reading(format!("{} archivos", format::count(n)).into());
+        }
+    });
+    let view = STATE.with_borrow_mut(|st| {
+        let at = here(st)?;
+        let (tree, _) = st.trees.get(&st.root)?;
+        let view = (at, st.cur, crumbs(tree, st.cur, st.zones.as_ref()), subtitle(st));
+        stop_reading(st);
+        st.reading = Some((Arc::clone(&cancel), timer));
+        st.kids.clear();
+        Some(view)
+    });
+    let Some((at, cur, crumbs, sub)) = view else { return units(app) };
+    let data = app.global::<SpaceData>();
+    data.set_rows(model(Vec::new()));
+    data.set_strip(model(Vec::new()));
+    data.set_crumbs(model(crumbs));
+    data.set_denied(false);
+    data.set_selected(-1);
+    data.set_reading("".into());
+    data.set_subtitle(sub.into());
+    data.set_phase(3);
+    let weak = app.as_weak();
+    std::thread::spawn(move || {
+        let files = read_files(&dir, &cancel, &seen);
+        let _ = weak.upgrade_in_event_loop(move |app| read_done(&app, &cancel, at, cur, files));
+    });
+}
+
+/// Vuelve la lectura: si sigue siendo la de la carpeta que se ve, cuelga los archivos y la pinta.
+/// Si no se pudo leer, se ve tal cual, con su `Rest`.
+fn read_done(app: &AppWindow, cancel: &Arc<AtomicBool>, at: At, cur: Id, files: Option<Vec<tree::Entry>>) {
+    let mine = STATE.with_borrow_mut(|st| {
+        if !st.reading.as_ref().is_some_and(|r| Arc::ptr_eq(&r.0, cancel)) {
+            return false;
+        }
+        st.reading = None;
+        if here(st) != Some(at) || st.cur != cur {
+            return false;
+        }
+        if let (Some(files), Some((tree, _))) = (files, st.trees.get_mut(&st.root)) {
+            tree.expand(cur, files);
+        }
+        true
+    });
+    if mine {
+        paint(app);
+    }
 }
 
 /// El análisis que se ve.
@@ -305,7 +401,7 @@ fn repaint(app: &AppWindow) {
         0 => units(app),
         2 => {
             units(app);
-            show(app);
+            paint(app);
         }
         _ => {}
     }
@@ -392,8 +488,6 @@ impl Space {
         let k = c.clone();
         data.on_stop(move || k.with(Self::stop));
         let k = c.clone();
-        data.on_select(move |i| k.with(|app| Self::select(app, i)));
-        let k = c.clone();
         data.on_enter(move |i| {
             k.go(|st| {
                 let (tree, _) = st.trees.get(&st.root)?;
@@ -418,13 +512,16 @@ impl Space {
             })
         });
         data.on_open(|i| {
-            let path = STATE.with_borrow(|st| {
+            let target = STATE.with_borrow(|st| {
                 let (tree, _) = st.trees.get(&st.root)?;
                 let id = *st.kids.get(usize::try_from(i).ok()?)?;
-                openable(tree.node(id)).then(|| tree.path(id))
+                let n = tree.node(id);
+                // Una carpeta sin acceso se abre igual: si Windows no deja entrar, lo dice el
+                // Explorador. Un enlace va como archivo: se selecciona sin seguirlo.
+                (n.kind != Kind::Rest).then(|| (tree.path(id), matches!(n.kind, Kind::Dir | Kind::Denied), n.odd))
             });
-            if let Some(p) = path {
-                win::open_in_explorer(&p);
+            if let Some((p, is_dir, odd)) = target {
+                win::open_in_explorer(&p, is_dir, odd);
             }
         });
         let k = c.clone();
@@ -458,7 +555,7 @@ impl Space {
         // Solo con una carpeta a la vista: mientras se analiza no hay filas que repintar.
         self.with(|app| {
             if app.global::<SpaceData>().get_phase() == 2 {
-                show(app);
+                paint(app);
             }
         });
     }
@@ -471,6 +568,7 @@ impl Space {
 
     /// Va a la carpeta que diga `to`; si no hay, a las unidades.
     fn go(&self, to: impl FnOnce(&State) -> Option<Id>) {
+        STATE.with_borrow_mut(stop_reading);
         self.with(|app| match STATE.with_borrow(to) {
             Some(id) => {
                 STATE.with_borrow_mut(|st| st.cur = id);
@@ -485,6 +583,7 @@ impl Space {
         let Some(root) = STATE.with_borrow(|st| st.drives.get(usize::try_from(i).ok()?).map(|d| d.root.clone())) else {
             return;
         };
+        STATE.with_borrow_mut(stop_reading);
         if STATE.with_borrow(|st| st.trees.contains_key(&root)) {
             STATE.with_borrow_mut(|st| (st.root, st.cur) = (root, 0));
             return self.with(show);
@@ -518,6 +617,7 @@ impl Space {
             data.set_current(g.2.as_str().into());
         });
         STATE.with_borrow_mut(|st| {
+            stop_reading(st);
             st.trees.remove(&root);
             st.cancel = Some(Arc::clone(&cancel));
             st.timer = Some(timer);
@@ -564,29 +664,15 @@ impl Space {
         units(app);
     }
 
-    fn select(app: &AppWindow, i: i32) {
-        let note = STATE.with_borrow(|st| {
-            let (tree, _) = st.trees.get(&st.root)?;
-            lock_note(tree, *st.kids.get(usize::try_from(i).ok()?)?, st.zones.as_ref())
-        });
-        let (title, text) = note.unwrap_or_default();
-        let data = app.global::<SpaceData>();
-        data.set_lock_title(title.into());
-        data.set_lock_text(text.into());
-    }
-
-    /// «Papelera» en la fila `i`: pregunta, con «Borrar del todo…» como alternativa.
+    /// «Borrar…» en la fila `i`: si se puede, pregunta, con «Borrar del todo…» como alternativa;
+    /// si no, explica por qué.
     fn recycle(&self, app: &AppWindow, i: i32) {
         if app.get_locked() {
             return;
         }
-        let Some((at, id, (_, name, size))) = STATE.with_borrow_mut(|st| {
-            let id = *st.kids.get(usize::try_from(i).ok()?)?;
-            let at = here(st)?;
-            let t = target(st, &at, id)?;
-            Some((at, id, t))
-        }) else {
-            return;
+        let Some((at, id)) = STATE.with_borrow(|st| Some((here(st)?, *st.kids.get(usize::try_from(i).ok()?)?))) else { return };
+        let Some((_, name, size)) = STATE.with_borrow_mut(|st| target(st, &at, id)) else {
+            return self.why_notice(app, id);
         };
         let lines = vec![ModalLine { label: name.into(), value: format::bytes(size).into() }];
         let ask = Confirm {
@@ -603,6 +689,34 @@ impl Space {
         let k = self.clone();
         let on_alt = move || k.with(|app| k.ask_purge(app, at2, id));
         confirm_with_alt(app, ask, on_ok, on_alt);
+    }
+
+    /// Por qué no se puede borrar el nodo `id` de la carpeta que se ve, en la ventana de aviso.
+    fn why_notice(&self, app: &AppWindow, id: Id) {
+        let admin = app.get_admin();
+        let n = STATE.with_borrow(|st| {
+            let (tree, _) = st.trees.get(&st.root)?;
+            let (n, zones) = (tree.node(id), st.zones.as_ref());
+            let path = tree.path(id);
+            let why = why(n, lock_of(n, &path, zones), zones.is_some())?;
+            let (name, path) = (name(tree, id, zones), path.to_string_lossy().into_owned());
+            let ctx = Ctx {
+                name: &name,
+                path: &path,
+                size: (n.kind != Kind::Denied).then_some(n.size),
+                admin,
+                can_enter: n.can_enter(),
+                game: None,
+                xbox: false,
+                link_to: None,
+                link_drive: None,
+            };
+            Some(notice::locked(why, &ctx))
+        });
+        // Por ahora, cualquier botón solo cierra la ventana.
+        if let Some(n) = n {
+            ui::notice(app, &n, |_| {});
+        }
     }
 
     /// «¿Borrar del todo?» para el nodo `id` de `at`, con lo que ocupa ahora. Solo borra si se
