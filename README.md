@@ -34,7 +34,7 @@ La v2 tiene seis secciones en una barra lateral (con solo iconos por debajo de 1
 
 **Espacio.** Dónde se va el disco, en cuatro pestañas:
 
-- **Carpetas.** Elige una unidad y WinCleaner analiza su árbol (se puede detener): entras y sales de las carpetas, ves qué ocupa cada una y puedes abrirla en el Explorador. Las que tienen juegos dentro llevan la pastilla «Juegos».
+- **Carpetas.** Elige una unidad y WinCleaner analiza su árbol (se puede detener): entras y sales de las carpetas, ves qué ocupa cada una y puedes abrirla en el Explorador. Cada carpeta enseña todos sus archivos, que se leen al entrar. Las que tienen juegos dentro llevan la pastilla «Juegos».
 - **Juegos.** Los de Steam, Epic, GOG, Battle.net, EA app, Ubisoft Connect y Xbox, con su tamaño y cuándo los jugaste. «Desinstalar» abre el lanzador o la Configuración de Windows, nunca borra por su cuenta.
 - **Duplicados.** Busca archivos idénticos en tus carpetas o en la unidad que elijas; conserva una copia de cada grupo (por defecto, la de la carpeta conocida) y marca las demás.
 - **Instaladores viejos.** Los `.exe`, `.msi` e imágenes de Descargas y Escritorio, con los de más de 30 días marcados y los que ya tienes instalados señalados.
@@ -47,7 +47,7 @@ Borrar desde Espacio siempre manda a la papelera (con «Deshacer»); solo «Borr
 - tu perfil, tus carpetas conocidas (Documentos, Descargas, Escritorio, Imágenes, Música y Vídeos) y `AppData`, como carpetas: lo que tienen dentro sí se puede borrar;
 - la carpeta de WinCleaner y las carpetas con juegos.
 
-Se ven, pero sin casilla ni botón de borrar.
+Se ven y tienen «Borrar…», pero en vez de borrar explican por qué no se puede y, cuando hay forma, llevan a ella (Juegos, Programas, la carpeta o reiniciar como administrador).
 
 **Limpiar.** Nueve categorías, cada una con su casilla y su tamaño (bytes y archivos) antes de borrar:
 
