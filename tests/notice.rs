@@ -123,3 +123,84 @@ fn notice_closes_then_acts_once() {
     let want = vec![(Act::Retry, false), (Act::Explorer, false), (Act::Procs(Some(7)), false)];
     assert_eq!(*got.borrow(), want);
 }
+
+/// Aviso con «Ir a Procesos» y «Reintentar»; sin `main` si `retry` es falso.
+fn aviso(retry: bool) -> wincleaner::space::notice::Notice {
+    use wincleaner::space::notice::{Act, Button, Notice as Aviso};
+    let btn = |act| Some(Button { text: "x".into(), icon: "", act });
+    Aviso {
+        title: "No se ha podido borrar".into(),
+        text: String::new(),
+        lines: vec![],
+        done: String::new(),
+        head: String::new(),
+        groups: vec![],
+        left: btn(Act::Explorer),
+        close: "Cerrar",
+        main: if retry { btn(Act::Retry) } else { None },
+    }
+}
+
+/// Abre un aviso cuyo «Reintentar» abre otro (con o sin `main`), lo pulsa con Tab y Espacio y
+/// devuelve (ventana, acciones recibidas).
+fn reabierto(retry: bool) -> (AppWindow, Rc<std::cell::RefCell<Vec<wincleaner::space::notice::Act>>>) {
+    use wincleaner::ui::{install_modal, notice};
+    headless::init();
+    let app = AppWindow::new().unwrap();
+    install_modal(&app);
+    let got: Rc<std::cell::RefCell<Vec<_>>> = Rc::default();
+    let (g, w) = (got.clone(), app.as_weak());
+    notice(&app, &aviso(true), move |act| {
+        g.borrow_mut().push(act);
+        let g = g.clone();
+        notice(&w.unwrap(), &aviso(retry), move |act| g.borrow_mut().push(act));
+    });
+    headless::render(app.window(), 1100, 720);
+    key(&app, "\t");
+    key(&app, " ");
+    assert!(app.global::<Notice>().get_open());
+    (app, got)
+}
+
+/// El aviso que se abre desde una acción empieza con el foco en «Cerrar».
+#[test]
+fn reopened_from_act_focuses_close() {
+    use wincleaner::space::notice::Act;
+    let (app, got) = reabierto(true);
+    key(&app, " ");
+    assert_eq!(*got.borrow(), vec![Act::Retry]);
+    assert!(!app.global::<Notice>().get_open());
+}
+
+#[test]
+fn reopened_from_act_escape_closes() {
+    use wincleaner::space::notice::Act;
+    for retry in [true, false] {
+        let (app, got) = reabierto(retry);
+        key(&app, "\u{1b}");
+        assert_eq!(*got.borrow(), vec![Act::Retry]);
+        assert!(!app.global::<Notice>().get_open(), "retry: {retry}");
+    }
+}
+
+/// `notice()` con otro aviso abierto (y el foco en «Reintentar») vuelve a poner el foco en «Cerrar».
+#[test]
+fn notice_over_open_notice_focuses_close() {
+    use wincleaner::ui::notice;
+    for (k, retry) in [(" ", true), ("\u{1b}", false)] {
+        headless::init();
+        let app = AppWindow::new().unwrap();
+        wincleaner::ui::install_modal(&app);
+        let n = Rc::new(Cell::new(0));
+        let c = n.clone();
+        notice(&app, &aviso(true), move |_| c.set(c.get() + 1));
+        headless::render(app.window(), 1100, 720);
+        key(&app, "\t");
+        let c = n.clone();
+        notice(&app, &aviso(retry), move |_| c.set(c.get() + 1));
+        headless::render(app.window(), 1100, 720);
+        key(&app, k);
+        assert_eq!(n.get(), 0);
+        assert!(!app.global::<Notice>().get_open(), "{k:?}");
+    }
+}

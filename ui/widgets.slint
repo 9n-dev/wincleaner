@@ -587,6 +587,9 @@ export global Notice {
     in property <string> main-icon;
     in property <[ModalLine]> lines;
     in property <[NoticeGroup]> groups;
+    // Sube con cada aviso que se abre: si se abre otro sin que la ventana llegue a cerrarse
+    // (desde una acción o encima de uno abierto), el foco vuelve a «Cerrar».
+    in property <int> serial;
     callback left();
     callback main();
     callback group(int);
@@ -867,7 +870,9 @@ export component NoticeModal inherits Rectangle {
     if Notice.open: FocusScope {
         property <bool> has-left: Notice.left-text != "";
         property <bool> has-main: Notice.main-text != "";
+        property <int> serial: Notice.serial;
         init => { close-btn.focus(); }
+        changed serial => { close-btn.focus(); }
         key-pressed(e) => {
             if (e.text == Key.Return || e.text == Key.Escape) {
                 Notice.open = false;

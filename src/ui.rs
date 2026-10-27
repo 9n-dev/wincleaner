@@ -148,5 +148,6 @@ pub fn notice(app: &AppWindow, n: &notice::Notice, on: impl Fn(Act) + 'static) {
     let mut acts = vec![act(&n.left), act(&n.main)];
     acts.extend(n.groups.iter().map(|g| act(&g.button)));
     NOTICE.set(Some((acts, Box::new(on))));
+    w.set_serial(w.get_serial().wrapping_add(1));
     w.set_open(true);
 }
