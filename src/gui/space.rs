@@ -13,7 +13,8 @@ use slint::{ComponentHandle, ModelRc, Timer, TimerMode, VecModel, Weak};
 use wincleaner::categories::is_link;
 use wincleaner::space::deletable;
 use wincleaner::space::dups::{kind, kind_label};
-use wincleaner::space::recycle::{Outcome, Reason, outcome_text, outermost, undo_text};
+use wincleaner::space::notice;
+use wincleaner::space::recycle::{Fail, Outcome, Reason, done_text, outermost, undo_text};
 use wincleaner::space::tree::{Id, Kind, Node, Tree};
 use wincleaner::space::zones::{Block, Zones};
 use wincleaner::ui::{self, AppWindow, Confirm, DriveItem, ModalLine, SpaceData, SpaceRow, StripPart, confirm_with_alt};
@@ -688,21 +689,24 @@ impl Space {
             // Lo que ya no existe (otro programa lo borró mientras) está hecho.
             rep.failed.retain(|(p, r)| *r != Reason::Purged && exists(p));
             // Lo que queda de cada fallo: una carpeta se vuelve a leer para el árbol.
-            let (mut left, mut scans) = (0, Vec::new());
-            for (p, _) in &rep.failed {
+            let (mut left, mut scans, mut fails) = (0, Vec::new(), Vec::new());
+            for (p, r) in &rep.failed {
+                let mut size = 0;
                 match std::fs::symlink_metadata(p) {
                     Ok(md) if md.is_dir() && !is_link(&md) => {
                         if let Some(t) = Tree::scan(p, &AtomicBool::new(false), &mut |_, _, _| {}) {
-                            left += t.node(t.root()).size;
+                            size = t.node(t.root()).size;
                             scans.push((p.clone(), t));
                         }
                     }
-                    Ok(md) => left += md.len(),
+                    Ok(md) => size = md.len(),
                     Err(_) => {}
                 }
+                left += size;
+                fails.push(Fail { name: p.file_name().unwrap_or(p.as_os_str()).to_string_lossy().into_owned(), size, reason: *r });
             }
-            let failed = rep.failed.iter().map(|f| f.1).chain(std::iter::repeat_n(Reason::Purged, purged)).collect();
-            let outcome = Outcome { names, sent: size.saturating_sub(left), left, failed, missing };
+            fails.extend((0..purged).map(|_| Fail { name: String::new(), size: 0, reason: Reason::Purged }));
+            let outcome = Outcome { names, sent: size.saturating_sub(left), left, failed: fails, missing, ..Default::default() };
             let _ = k.0.upgrade_in_event_loop(move |app| Self::deleted(&app, purge, alt, rep, scans, outcome));
         });
     }
@@ -737,8 +741,16 @@ impl Space {
             st.last.retry.is_some()
         });
         // Reintentar no sirve para lo que ya se borró del todo.
-        let again = outcome.failed.iter().any(|r| *r != Reason::Purged);
-        set_note(app, outcome_text(&outcome, purge, alt), undo, retry && again);
+        let again = outcome.failed.iter().any(|f| f.reason != Reason::Purged);
+        // Hasta la ventana de aviso (Task 8), los fallos siguen saliendo en el aviso rojo.
+        let note = if outcome.failed.is_empty() && !outcome.missing {
+            let (title, text) = done_text(&outcome, purge);
+            (true, title, text)
+        } else {
+            let n = notice::failed(&outcome, purge, alt, false, false);
+            (false, n.title, n.text)
+        };
+        set_note(app, note, undo, retry && again);
         app.set_locked(false);
         repaint(app);
     }

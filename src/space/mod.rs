@@ -1,6 +1,7 @@
 pub mod zones;
 pub mod tree;
 pub mod recycle;
+pub mod notice;
 pub mod parse;
 pub mod games;
 pub mod dups;
