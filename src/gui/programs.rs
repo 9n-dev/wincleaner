@@ -178,6 +178,25 @@ impl Programs {
         });
     }
 
+    /// «Ir a Programas» desde Carpetas: abre la sección sin búsqueda y elige el programa
+    /// instalado en `path` o en una carpeta que lo contiene, si lo hay.
+    pub(super) fn show(&self, app: &AppWindow, path: Option<String>) {
+        if app.get_locked() {
+            return;
+        }
+        app.set_section(3);
+        let data = app.global::<ProgramsData>();
+        data.set_query("".into());
+        self.refresh_view();
+        let i = STATE.with_borrow(|st| {
+            let e = &st.raws[programs::owner(&st.raws, path.as_deref()?)?];
+            st.view.iter().position(|p| p.hive == e.hive && p.key == e.key)
+        });
+        if let Some(i) = i {
+            data.set_selected(i as i32);
+        }
+    }
+
     /// Filtra y ordena según `query` y `sort`, y deja la selección vacía.
     fn refresh_view(&self) {
         let Some(app) = self.0.upgrade() else { return };

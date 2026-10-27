@@ -13,7 +13,7 @@ use slint::{ComponentHandle, Model, ModelNotify, ModelRc, ModelTracker, SharedSt
 use wincleaner::categories::is_link;
 use wincleaner::paths::strip_verbatim;
 use wincleaner::space::dups::{kind, kind_label};
-use wincleaner::space::notice::{self, Ctx};
+use wincleaner::space::notice::{self, Act, Ctx};
 use wincleaner::space::recycle::{Fail, Outcome, Reason, done_text, outermost, undo_text};
 use wincleaner::space::tree::{self, Id, Kind, Node, Tree, read_files};
 use wincleaner::space::zones::{Block, Lock, Zones};
@@ -21,12 +21,15 @@ use wincleaner::space::{count_text, deletable, why};
 use wincleaner::ui::{self, AppWindow, Confirm, DriveItem, ModalLine, SpaceData, SpaceRow, StripPart, confirm_with_alt};
 use wincleaner::{clean, format};
 
+use super::games;
 use crate::win;
 use crate::win::recycle::Report;
 
 /// Un análisis concreto: raíz de la unidad y cuándo terminó. Los `Id` solo valen en ese árbol.
 type At = (String, Instant);
 type After = Box<dyn FnOnce(&AppWindow, &Report)>;
+/// Lo que hacen los botones de los avisos que llevan a otra sección (`Space::on_act`).
+type Route = Rc<dyn Fn(&AppWindow, Act)>;
 /// «Reintentar»: lo pone quien pide el borrado.
 pub(super) type Retry = Rc<dyn Fn(&Space, &AppWindow)>;
 /// Se mira en el hilo, justo antes de enviar cada elemento: `false` lo deja fuera como `Changed`.
@@ -69,6 +72,7 @@ struct State {
     last: Last,
     /// Lo que hace quien pidió el borrado en curso, al volver.
     after: Option<After>,
+    route: Option<Route>,
 }
 
 thread_local! {
@@ -706,31 +710,71 @@ impl Space {
     }
 
     /// Por qué no se puede borrar el nodo `id` de la carpeta que se ve, en la ventana de aviso.
+    /// Sus botones entran en la carpeta, la abren en el Explorador, analizan otra unidad o
+    /// llevan a otra sección (`on_act`).
     fn why_notice(&self, app: &AppWindow, id: Id) {
         let admin = app.get_admin();
-        let n = STATE.with_borrow(|st| {
+        let Some((at, nt, path, is_dir, odd)) = STATE.with_borrow(|st| {
             let (tree, _) = st.trees.get(&st.root)?;
             let (n, zones) = (tree.node(id), st.zones.as_ref());
             let path = tree.path(id);
             let why = why(n, lock_of(n, &path, zones), zones.is_some())?;
-            let (name, path) = (name(tree, id, zones), path.to_string_lossy().into_owned());
+            // A dónde apunta el enlace, sin seguirlo; su unidad solo si es otra unidad fija.
+            let link_to = (n.kind == Kind::Link).then(|| std::fs::read_link(&path).ok()).flatten().map(|to| {
+                let to = to.to_string_lossy().into_owned();
+                strip_verbatim(&to).map_or(to.clone(), Into::into)
+            });
+            let link_drive = link_to.as_deref().and_then(|to| {
+                let d = st.drives.iter().find(|d| d.root != st.root && to.get(..3).is_some_and(|r| r.eq_ignore_ascii_case(&d.root)))?;
+                Some(d.root.trim_end_matches('\\').to_string())
+            });
+            let (name, p) = (name(tree, id, zones), path.to_string_lossy().into_owned());
+            // Lee el estado de Juegos, no este.
+            let game = games::by_dir(&p);
             let ctx = Ctx {
                 name: &name,
-                path: &path,
-                size: (n.kind != Kind::Denied).then_some(n.size),
+                path: &p,
+                size: (!matches!(n.kind, Kind::Denied | Kind::Link)).then_some(n.size),
                 admin,
                 can_enter: n.can_enter(),
-                game: None,
-                xbox: false,
-                link_to: None,
-                link_drive: None,
+                game: game.as_ref().map(|g| (g.0.as_str(), g.1)),
+                xbox: game.as_ref().is_some_and(|g| g.2),
+                link_to: link_to.as_deref(),
+                link_drive: link_drive.as_deref(),
             };
-            Some(notice::locked(why, &ctx))
+            Some((here(st)?, notice::locked(why, &ctx), path, matches!(n.kind, Kind::Dir | Kind::Denied), n.odd))
+        }) else {
+            return;
+        };
+        let k = self.clone();
+        ui::notice(app, &nt, move |act| {
+            k.with(|app| match act {
+                // Solo si sigue siendo el mismo análisis.
+                Act::Enter => k.go(|st| (here(st).as_ref() == Some(&at)).then_some(id)),
+                Act::Explorer => win::open_in_explorer(&path, is_dir, odd),
+                Act::Analyze(root) => {
+                    let i = STATE.with_borrow(|st| st.drives.iter().position(|d| d.root.eq_ignore_ascii_case(&root)));
+                    if let Some(i) = i {
+                        k.analyze(i as i32);
+                    }
+                }
+                Act::Retry => app.global::<SpaceData>().invoke_retry(),
+                // «Borrar del todo…» sale en los avisos de fallo (Task 8), no en este.
+                Act::Purge => {}
+                act => {
+                    let route = STATE.with_borrow(|st| st.route.clone());
+                    if let Some(f) = route {
+                        f(app, act);
+                    }
+                }
+            })
         });
-        // Por ahora, cualquier botón solo cierra la ventana.
-        if let Some(n) = n {
-            ui::notice(app, &n, |_| {});
-        }
+    }
+
+    /// Lo que hacen los botones de los avisos que llevan a otra sección (Juegos, Programas,
+    /// Procesos, reiniciar como administrador, buscar duplicados otra vez).
+    pub(super) fn on_act(&self, f: impl Fn(&AppWindow, Act) + 'static) {
+        STATE.with_borrow_mut(|st| st.route = Some(Rc::new(f)));
     }
 
     /// «¿Borrar del todo?» para el nodo `id` de `at`, con lo que ocupa ahora. Solo borra si se

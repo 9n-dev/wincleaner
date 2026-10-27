@@ -9,9 +9,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use slint::{ComponentHandle, Model, VecModel, Weak};
 use wincleaner::format;
+use wincleaner::paths::{is_inside, same};
 use wincleaner::space::games::{Game, Launcher, Uninstall};
 use wincleaner::space::tree::Tree;
-use wincleaner::ui::{AppWindow, Confirm, GameRow, GamesData, confirm};
+use wincleaner::ui::{AppWindow, Confirm, GameRow, GamesData, SpaceData, confirm};
 
 use super::programs::{self, Programs};
 use super::space::Space;
@@ -23,6 +24,8 @@ struct State {
     games: Option<Vec<Game>>,
     /// Hay una lectura en marcha (con sus tamaños): no se empieza otra.
     loading: bool,
+    /// La carpeta del juego que hay que elegir cuando llegue la lista (`show`).
+    want: Option<String>,
 }
 
 thread_local! {
@@ -33,6 +36,20 @@ thread_local! {
 /// Lo que ocupan los juegos, para el Resumen; `None` hasta la primera lectura.
 pub(super) fn total() -> Option<u64> {
     STATE.with_borrow(|st| st.games.as_deref().map(sum))
+}
+
+/// La posición del juego cuya carpeta es `path` o la contiene.
+fn find(games: &[Game], path: &str) -> Option<usize> {
+    games.iter().position(|g| g.dir.as_deref().is_some_and(|d| same(d, path) || is_inside(path, d)))
+}
+
+/// (nombre, lanzador, es de Xbox) del juego que tiene `path`, si la lista ya se leyó.
+pub(super) fn by_dir(path: &str) -> Option<(String, &'static str, bool)> {
+    STATE.with_borrow(|st| {
+        let games = st.games.as_deref()?;
+        let g = &games[find(games, path)?];
+        Some((g.name.clone(), g.launcher.name(), g.launcher == Launcher::Xbox))
+    })
 }
 
 fn sum(games: &[Game]) -> u64 {
@@ -98,6 +115,25 @@ impl Games {
         g
     }
 
+    /// «Ir a Juegos» desde Carpetas: abre la pestaña, vuelve a leer la lista y elige el juego
+    /// que tiene `dir` (ya, si la lista está, y otra vez al llegar la nueva).
+    pub(super) fn show(&self, app: &AppWindow, dir: Option<String>) {
+        if app.get_locked() {
+            return;
+        }
+        app.set_section(2);
+        let data = app.global::<SpaceData>();
+        data.set_tab(1);
+        let now = STATE.with_borrow_mut(|st| {
+            st.want.clone_from(&dir);
+            find(st.games.as_deref()?, dir.as_deref()?)
+        });
+        self.load();
+        if let Some(i) = now {
+            app.global::<GamesData>().set_selected(i as i32);
+        }
+    }
+
     /// Lee la lista en un hilo y, después, en el mismo hilo, mide los juegos que no dicen su tamaño.
     /// La lista de antes se queda hasta que llega la nueva. También al entrar en la pestaña.
     pub(super) fn load(&self) {
@@ -135,7 +171,9 @@ impl Games {
         let data = app.global::<GamesData>();
         data.set_rows(Rc::new(VecModel::from(games.iter().map(row).collect::<Vec<_>>())).into());
         data.set_subtitle(subtitle(&games).into());
-        data.set_selected(-1);
+        // El juego que pidió `show`, si sigue en la lista.
+        let want = STATE.with_borrow_mut(|st| st.want.take());
+        data.set_selected(want.and_then(|w| find(&games, &w)).map_or(-1, |i| i as i32));
         data.set_phase(1);
         STATE.with_borrow_mut(|st| st.games = Some(games));
         super::summary::refresh_space(app);

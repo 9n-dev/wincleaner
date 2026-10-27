@@ -432,6 +432,74 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     data.set_phase(2);
 
+    // Lo que no se puede borrar: el aviso de `notice::locked` con su botón a donde se arregla.
+    {
+        use wincleaner::space::Why;
+        use wincleaner::space::notice::{Ctx, locked};
+        use wincleaner::space::zones::Lock;
+        let gb = |g: f64| (g * (1u64 << 30) as f64) as u64;
+        let ctx = |name, path, size| Ctx {
+            name,
+            path,
+            size: Some(gb(size)),
+            admin: false,
+            can_enter: true,
+            game: None,
+            xbox: false,
+            link_to: None,
+            link_drive: None,
+        };
+        let bg3 = r"C:\Program Files (x86)\Steam\steamapps\common\Baldur's Gate 3";
+        let juegos = filas(
+            &[
+                ("game", "Baldur's Gate 3", bg3, 118.0, "63 %", 0, "Juego"),
+                ("game", "Stardew Valley", "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Stardew Valley", 0.6, "0 %", 5, "Juego"),
+            ],
+            187.0,
+        );
+        let progs = filas(
+            &[
+                ("apps", "Adobe", "C:\\Program Files\\Adobe", 11.4, "47 %", 0, "Programa"),
+                ("apps", "NVIDIA Corporation", "C:\\Program Files\\NVIDIA Corporation", 3.2, "13 %", 1, "Programa"),
+            ],
+            24.0,
+        );
+        let enlaces = filas(
+            &[
+                ("link", "Documentos", "C:\\Users\\ana\\Documents → D:\\Documentos", 0.0, "", 5, "Enlace"),
+                ("folder", "Escritorio", "C:\\Users\\ana\\Desktop", 2.1, "1 %", 0, "Carpeta de Windows"),
+            ],
+            180.0,
+        );
+        let juego = locked(Why::Zone(Lock::Game), &Ctx { game: Some(("Baldur's Gate 3", "Steam")), ..ctx("Baldur's Gate 3", bg3, 118.0) });
+        let programa = locked(Why::Zone(Lock::Programs), &ctx("Adobe", r"C:\Program Files\Adobe", 11.4));
+        let conocida = locked(Why::Zone(Lock::Known("Descargas")), &ctx("Descargas", r"C:\Users\ana\Downloads", 29.0));
+        let windows = locked(Why::Zone(Lock::Windows), &ctx("Windows", r"C:\Windows", 38.0));
+        let enlace = locked(
+            Why::Link,
+            &Ctx { size: None, link_to: Some(r"D:\Documentos"), link_drive: Some("D:"), ..ctx("Documentos", r"C:\Users\ana\Documents", 0.0) },
+        );
+        let comunes = ["Este equipo", "C:", "Archivos de programa (x86)", "Steam", "steamapps", "common"];
+        for (nombre, filas, migas, selected, n) in [
+            ("juego", &juegos, crumbs(&comunes), 0, juego),
+            ("programa", &progs, crumbs(&["Este equipo", "C:", "Archivos de programa"]), 0, programa),
+            ("conocida", &raiz, crumbs(&["Este equipo", "C:"]), 3, conocida),
+            ("windows", &raiz, crumbs(&["Este equipo", "C:"]), 2, windows),
+            ("enlace", &enlaces, ruta(&[]), 0, enlace),
+        ] {
+            data.set_rows(filas.0.clone());
+            data.set_strip(filas.1.clone());
+            data.set_crumbs(migas);
+            data.set_selected(selected);
+            data.set_count("".into());
+            wincleaner::ui::notice(&app, &n, |_| {});
+            for (suffix, w, h) in [("", 1100, 720), ("-min", 880, 600)] {
+                guarda(&format!("wcvt-aviso-{nombre}{suffix}"), &headless::render(app.window(), w, h), w, h)?;
+            }
+            app.global::<wincleaner::ui::Notice>().set_open(false);
+        }
+    }
+
     // Juegos, con los datos de `GAMES` de las maquetas: lista, confirmar y vacío.
     use wincleaner::ui::{GameRow, GamesData};
     let games = [

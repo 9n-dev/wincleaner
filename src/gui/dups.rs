@@ -295,16 +295,19 @@ impl Dups {
         let k = d.clone();
         data.on_send(move || k.ask());
         let k = d.clone();
-        data.on_again(move || {
-            k.with(|app| {
-                if !app.get_locked() {
-                    STATE.with_borrow_mut(|st| (st.groups, st.shown) = (None, Vec::new()));
-                    choose(app);
-                    super::summary::refresh_space(app);
-                }
-            })
-        });
+        data.on_again(move || k.again());
         d
+    }
+
+    /// «Buscar otra vez»: olvida la búsqueda y vuelve a las opciones.
+    pub(super) fn again(&self) {
+        self.with(|app| {
+            if !app.get_locked() {
+                STATE.with_borrow_mut(|st| (st.groups, st.shown) = (None, Vec::new()));
+                choose(app);
+                super::summary::refresh_space(app);
+            }
+        })
     }
 
     fn with(&self, f: impl FnOnce(&AppWindow)) {

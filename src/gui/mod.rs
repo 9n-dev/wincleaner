@@ -11,6 +11,7 @@ mod space;
 mod summary;
 
 use slint::{CloseRequestResponse, ComponentHandle};
+use wincleaner::space::notice::Act;
 use wincleaner::ui::{self, AppWindow, Nav, SpaceData};
 
 use crate::win;
@@ -56,9 +57,20 @@ pub fn run() {
     let _clean = clean::Clean::new(&app);
     let programs = programs::Programs::new(&app);
     let space = space::Space::new(&app);
-    let games = games::Games::new(&app, programs, space.clone());
-    let _dups = dups::Dups::new(&app, space.clone());
+    let games = games::Games::new(&app, programs.clone(), space.clone());
+    let dups = dups::Dups::new(&app, space.clone());
     let installers = installers::Installers::new(&app, space.clone());
+    let procs = procs::Procs::new(&app);
+    // Los botones de los avisos de Espacio que llevan a otra sección.
+    let g = games.clone();
+    space.on_act(move |app, act| match act {
+        Act::Games(d) => g.show(app, d),
+        Act::Programs(p) => programs.show(app, p),
+        Act::Procs(p) => procs.show(app, p),
+        Act::Relaunch => app.global::<Nav>().invoke_relaunch_admin(),
+        Act::Search => dups.again(),
+        _ => {}
+    });
     // Slint admite un solo manejador por callback: aquí se reparte a cada pestaña de Espacio.
     app.global::<SpaceData>().on_tab_shown(move |i| match i {
         0 => space.shown(),
@@ -66,7 +78,6 @@ pub fn run() {
         3 => installers.load(),
         _ => {}
     });
-    procs::Procs::new(&app);
     security::Security::new(&app);
     let _ = app.run();
     // Un análisis de Defender en marcha no se queda suelto al cerrar o al reiniciar como admin.

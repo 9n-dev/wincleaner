@@ -65,6 +65,8 @@ struct State {
     /// Lo que arranca con Windows; `toggle(i)` es un índice de aquí y de `starts_model`.
     starts: Vec<Item>,
     starts_model: Rc<VecModel<StartRow>>,
+    /// El PID que pidió `show`: la siguiente vuelta elige su grupo.
+    want: Option<u32>,
 }
 
 thread_local! {
@@ -185,6 +187,17 @@ impl Procs {
         c
     }
 
+    /// «Ir a Procesos» desde un aviso: abre «En ejecución» y, si hay `pid`, la siguiente vuelta
+    /// elige su grupo.
+    pub(super) fn show(&self, app: &AppWindow, pid: Option<u32>) {
+        if app.get_locked() {
+            return;
+        }
+        STATE.with_borrow_mut(|st| st.want = pid);
+        app.global::<ProcsData>().set_tab(0);
+        app.set_section(4);
+    }
+
     fn visible(&self, v: bool) {
         if v {
             let k = self.clone();
@@ -248,9 +261,12 @@ impl Procs {
         }
         STATE.with_borrow_mut(|st| {
             st.busy = false;
-            // Se mantiene la fila elegida aunque cambie de sitio.
+            // El grupo del PID que pidió `show` o, si no, la fila elegida aunque cambie de sitio.
             let key = usize::try_from(data.get_selected()).ok().and_then(|i| st.groups.get(i)).map(|g| g.key.clone());
-            let selected = key.and_then(|k| s.groups.iter().position(|g| g.key == k));
+            let selected = match st.want.take() {
+                Some(pid) => s.groups.iter().position(|g| g.pids.contains(&pid)),
+                None => key.and_then(|k| s.groups.iter().position(|g| g.key == k)),
+            };
             let prev = st.prev.take();
             let elapsed = prev.as_ref().map(|p| total.saturating_sub(p.0)).filter(|&d| d > 0);
             let cpu_total = match (&prev, elapsed) {
