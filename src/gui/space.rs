@@ -60,8 +60,12 @@ struct State {
     timer: Option<Timer>,
     /// Refresca «analizado hace X min» cada minuto.
     clock: Timer,
-    /// Hay una carpeta leyéndose al entrar: `true` en su `cancel` la detiene; el `Timer` pinta la cuenta.
-    reading: Option<(Arc<AtomicBool>, Timer)>,
+    /// Hay una carpeta leyéndose al entrar: `true` en su `cancel` la detiene; el `Timer` pinta la
+    /// cuenta; el número es `rev` al empezar.
+    reading: Option<(Arc<AtomicBool>, Timer, u64)>,
+    /// Sube cada vez que un borrado, un «Deshacer» o `forget` cambian los árboles: una lectura
+    /// empezada antes ya no cuadra con el árbol y se repite.
+    rev: u64,
     last: Last,
     /// Lo que hace quien pidió el borrado en curso, al volver.
     after: Option<After>,
@@ -298,7 +302,9 @@ fn paint(app: &AppWindow) {
                 Kind::Dir | Kind::Denied | Kind::Link => dirs += 1,
                 Kind::File => files += 1,
                 // Un `Rest` sin leer cuenta sus archivos.
-                Kind::Rest | Kind::Opened => files += u64::from(tree.node(k).len),
+                Kind::Rest => files += u64::from(tree.node(k).len),
+                // No sale: `children()` enseña sus archivos.
+                Kind::Opened => {}
             }
         }
         let count = count_text(dirs, files, (*cur != tree.root()).then_some(total));
@@ -320,7 +326,7 @@ fn paint(app: &AppWindow) {
 
 /// Detiene la lectura en marcha, si hay: su resultado se descarta.
 fn stop_reading(st: &mut State) {
-    if let Some((c, _)) = st.reading.take() {
+    if let Some((c, ..)) = st.reading.take() {
         c.store(true, Ordering::Relaxed);
     }
 }
@@ -343,7 +349,7 @@ fn read(app: &AppWindow, dir: PathBuf) {
         let (tree, _) = st.trees.get(&st.root)?;
         let view = (at, st.cur, crumbs(tree, st.cur, st.zones.as_ref()), subtitle(st));
         stop_reading(st);
-        st.reading = Some((Arc::clone(&cancel), timer));
+        st.reading = Some((Arc::clone(&cancel), timer, st.rev));
         st.kids.clear();
         Some(view)
     });
@@ -365,23 +371,31 @@ fn read(app: &AppWindow, dir: PathBuf) {
 }
 
 /// Vuelve la lectura: si sigue siendo la de la carpeta que se ve, cuelga los archivos y la pinta.
-/// Si no se pudo leer, se ve tal cual, con su `Rest`.
+/// Si no se pudo leer, se ve tal cual, con su `Rest`. Si el árbol cambió mientras se leía (un
+/// borrado, «Deshacer»), lo leído puede no cuadrar: se descarta y se vuelve a leer.
 fn read_done(app: &AppWindow, cancel: &Arc<AtomicBool>, at: At, cur: Id, files: Option<Vec<tree::Entry>>) {
-    let mine = STATE.with_borrow_mut(|st| {
-        if !st.reading.as_ref().is_some_and(|r| Arc::ptr_eq(&r.0, cancel)) {
-            return false;
-        }
-        st.reading = None;
+    enum Then {
+        Nothing,
+        Paint,
+        Again,
+    }
+    let then = STATE.with_borrow_mut(|st| {
+        let Some((.., rev)) = st.reading.take_if(|r| Arc::ptr_eq(&r.0, cancel)) else { return Then::Nothing };
         if here(st) != Some(at) || st.cur != cur {
-            return false;
+            return Then::Nothing;
+        }
+        if rev != st.rev {
+            return Then::Again;
         }
         if let (Some(files), Some((tree, _))) = (files, st.trees.get_mut(&st.root)) {
             tree.expand(cur, files);
         }
-        true
+        Then::Paint
     });
-    if mine {
-        paint(app);
+    match then {
+        Then::Paint => paint(app),
+        Then::Again => show(app),
+        Then::Nothing => {}
     }
 }
 
@@ -828,6 +842,7 @@ impl Space {
     fn deleted(app: &AppWindow, purge: bool, alt: bool, rep: Report, scans: Vec<(PathBuf, Tree)>, outcome: Outcome) {
         // En el árbol de la unidad de cada elemento, si está analizada (no tiene por qué ser la que se ve).
         let after = STATE.with_borrow_mut(|st| {
+            st.rev += 1;
             for (p, t) in scans {
                 if let Some((_, tree)) = tree_of(&mut st.trees, &p)
                     && let Some(id) = tree.find(&p)
@@ -889,6 +904,7 @@ impl Space {
 
     fn undone(app: &AppWindow, names: Vec<String>, ids: Vec<(At, PathBuf, Id)>, failed: Vec<PathBuf>) {
         STATE.with_borrow_mut(|st| {
+            st.rev += 1;
             for (at, p, id) in ids {
                 if !failed.contains(&p)
                     && let Some(tree) = tree_at(&mut st.trees, &Some(at))
@@ -922,6 +938,7 @@ impl Space {
     /// Lo borrado desde otra pestaña sale de los árboles de todas las unidades analizadas.
     pub(super) fn forget(&self, files: &[(PathBuf, u64)]) {
         STATE.with_borrow_mut(|st| {
+            st.rev += 1;
             for (tree, _) in st.trees.values_mut() {
                 for (p, size) in files {
                     tree.forget(p, *size);
