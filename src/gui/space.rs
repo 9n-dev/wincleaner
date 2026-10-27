@@ -11,7 +11,7 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use slint::{ComponentHandle, ModelRc, Timer, TimerMode, VecModel, Weak};
 use wincleaner::categories::is_link;
-use wincleaner::space::{MAX_ROWS, deletable};
+use wincleaner::space::deletable;
 use wincleaner::space::dups::{kind, kind_label};
 use wincleaner::space::recycle::{Outcome, Reason, outcome_text, outermost, undo_text};
 use wincleaner::space::tree::{Id, Kind, Node, Tree};
@@ -154,27 +154,6 @@ fn row(tree: &Tree, id: Id, i: usize, total: u64, zones: Option<&Zones>) -> Spac
     }
 }
 
-/// Fila que junta lo que no cabe en la lista (`hidden`): no se elige ni se borra.
-fn more_row(tree: &Tree, hidden: &[Id], total: u64) -> SpaceRow {
-    let size: u64 = hidden.iter().map(|&c| tree.node(c).size).sum();
-    let dirs = hidden.iter().all(|&c| tree.node(c).kind != Kind::File);
-    let name = match (hidden.len(), dirs) {
-        (1, true) => "1 carpeta más".to_string(),
-        (1, false) => "1 elemento más".to_string(),
-        (n, d) => format!("{} {} más", format::count(n as u64), if d { "carpetas" } else { "elementos" }),
-    };
-    SpaceRow {
-        icon: "folder".into(),
-        name: name.into(),
-        sub: "Juntos".into(),
-        size: format::bytes(size).into(),
-        pct: format::percent(size, total).into(),
-        share: if total == 0 { 0.0 } else { (size as f64 / total as f64) as f32 },
-        color: 5,
-        ..Default::default()
-    }
-}
-
 /// Nota sobre la lista al elegir la fila `id` si no se puede borrar: (título, texto).
 fn lock_note(tree: &Tree, id: Id, zones: Option<&Zones>) -> Option<(String, String)> {
     let n = tree.node(id);
@@ -282,15 +261,9 @@ fn show(app: &AppWindow) {
         let State { trees, root, cur, kids, zones, .. } = st;
         let (tree, _) = trees.get(root)?;
         let zones = zones.as_ref();
-        // Las `MAX_ROWS` más grandes y una fila con las demás, que va al final: `kids` sigue
-        // valiendo para cada fila elegible.
-        let (shown, hidden) = tree.split_children(*cur, MAX_ROWS);
-        *kids = shown;
+        *kids = tree.children(*cur);
         let total = tree.node(*cur).size;
-        let mut rows: Vec<SpaceRow> = kids.iter().enumerate().map(|(i, &id)| row(tree, id, i, total, zones)).collect();
-        if !hidden.is_empty() {
-            rows.push(more_row(tree, &hidden, total));
-        }
+        let rows: Vec<SpaceRow> = kids.iter().enumerate().map(|(i, &id)| row(tree, id, i, total, zones)).collect();
         let mut strip: Vec<StripPart> =
             rows.iter().filter(|r| r.color < 5).map(|r| StripPart { label: r.name.clone(), share: r.share, color: r.color }).collect();
         let rest = 1.0 - strip.iter().map(|p| p.share).sum::<f32>();
@@ -299,7 +272,7 @@ fn show(app: &AppWindow) {
         }
         let mut crumbs = vec!["Este equipo".into()];
         crumbs.extend(tree.crumbs(*cur).into_iter().map(|c| name(tree, c, zones).into()));
-        let denied = kids.iter().chain(&hidden).any(|&k| tree.node(k).kind == Kind::Denied && !tree.node(k).odd);
+        let denied = kids.iter().any(|&k| tree.node(k).kind == Kind::Denied && !tree.node(k).odd);
         Some((rows, strip, crumbs, denied, subtitle(st)))
     });
     let Some((rows, strip, crumbs, denied, sub)) = view else { return units(app) };
