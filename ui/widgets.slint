@@ -532,6 +532,15 @@ export component EmptyState inherits Rectangle {
     }
 }
 
+// Lista que solo crea las filas que se ven. El compilador de Slint virtualiza un `for`
+// puesto directamente dentro de un elemento que se llame `ListView` y tenga estas
+// longitudes (`i-slint-compiler-1.18.1/object_tree.rs`): así no hace falta `std-widgets`.
+export component ListView inherits Flickable {
+    out property <length> visible-width: self.width;
+    out property <length> visible-height: self.height;
+    @children
+}
+
 export struct ModalLine { label: string, value: string }
 
 // Estado del modal de confirmación; lo rellena Rust.
@@ -557,6 +566,31 @@ export global Purge {
     in property <string> text;
     callback confirm();
     callback cancel();
+}
+
+// Fallos que comparten motivo, en la ventana de aviso. `button` vacío: sin botón.
+export struct NoticeGroup { icon: string, title: string, meta: string, names: string, button: string, button-icon: string }
+
+// Estado de la ventana de aviso (qué ha fallado y qué hacer); lo rellena Rust.
+export global Notice {
+    in-out property <bool> open;
+    in property <string> title;
+    in property <string> text;
+    // Recuadro verde de lo que sí se ha hecho; vacío si nada.
+    in property <string> done;
+    // Encabezado de los grupos.
+    in property <string> head;
+    in property <string> left-text;
+    in property <string> left-icon;
+    in property <string> close-text: "Cerrar";
+    in property <string> main-text;
+    in property <string> main-icon;
+    in property <[ModalLine]> lines;
+    in property <[NoticeGroup]> groups;
+    callback left();
+    callback main();
+    callback group(int);
+    callback close();
 }
 
 // Fondo oscuro y caja de los modales; el contenido va dentro, en columna.
@@ -818,6 +852,179 @@ export component PurgeModal inherits Rectangle {
                     clicked => {
                         Purge.confirm();
                         Purge.open = false;
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Ventana de aviso. Se pinta sobre todo y el foco empieza en «Cerrar». Intro y Esc cierran
+// siempre, tenga el foco quien lo tenga: «Reintentar», «Ir a…» y los botones de los grupos
+// solo responden a un clic o a Espacio. Se cierra antes de avisar a Rust, que puede abrir
+// otro modal.
+export component NoticeModal inherits Rectangle {
+    if Notice.open: FocusScope {
+        property <bool> has-left: Notice.left-text != "";
+        property <bool> has-main: Notice.main-text != "";
+        init => { close-btn.focus(); }
+        key-pressed(e) => {
+            if (e.text == Key.Return || e.text == Key.Escape) {
+                Notice.open = false;
+                Notice.close();
+                return accept;
+            }
+            // Trampa de foco: Cerrar → principal → izquierda → Cerrar; Mays+Tab, al revés.
+            if (e.text == Key.Tab) {
+                if (close-btn.has-focus && self.has-main) { main-btn.focus(); }
+                else if ((close-btn.has-focus || main-btn.has-focus) && self.has-left) { left-btn.focus(); }
+                else { close-btn.focus(); }
+                return accept;
+            }
+            if (e.text == Key.Backtab) {
+                if (close-btn.has-focus && self.has-left) { left-btn.focus(); }
+                else if ((close-btn.has-focus || left-btn.has-focus) && self.has-main) { main-btn.focus(); }
+                else { close-btn.focus(); }
+                return accept;
+            }
+            return reject;
+        }
+
+        Dialog {
+            label: Notice.title;
+
+            if Notice.done != "": Note {
+                kind: Tone.ok;
+                icon: "check";
+                title: Notice.done;
+            }
+            if Notice.text != "": Text {
+                text: Notice.text;
+                color: Palette.mu;
+                wrap: word-wrap;
+            }
+            if Notice.lines.length > 0: ModalLines {
+                lines: Notice.lines;
+            }
+            if Notice.head != "": Text {
+                text: Notice.head;
+                color: Palette.mu;
+                font-size: Type.label;
+                wrap: word-wrap;
+            }
+            if Notice.groups.length > 0: Rectangle {
+                border-radius: 10px;
+                border-width: 1px;
+                border-color: Palette.line2;
+                clip: true;
+                // A su altura: el hueco que sobre en la caja no estira las filas.
+                height: groups-box.preferred-height;
+
+                groups-box := VerticalLayout {
+                    for g[i] in Notice.groups: VerticalLayout {
+                        if i > 0: Rectangle {
+                            height: 1px;
+                            background: Palette.line2;
+                        }
+                        HorizontalLayout {
+                            padding: 10px;
+                            padding-left: 16px;
+                            padding-right: 16px;
+                            spacing: 10px;
+                            VerticalLayout {
+                                alignment: center;
+                                Icon {
+                                    name: g.icon;
+                                    color: Palette.tx;
+                                }
+                            }
+                            Text {
+                                text: g.title;
+                                color: Palette.tx;
+                                font-weight: 600;
+                                horizontal-stretch: 1;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+                            Text {
+                                text: g.meta;
+                                color: Palette.mu;
+                                font-size: Type.label;
+                                vertical-alignment: center;
+                            }
+                        }
+                        Rectangle {
+                            height: 1px;
+                            background: Palette.line2;
+                        }
+                        HorizontalLayout {
+                            padding: 10px;
+                            padding-left: 16px;
+                            spacing: 12px;
+                            Text {
+                                text: g.names;
+                                color: Palette.mu;
+                                font-family: Type.mono;
+                                font-size: Type.label;
+                                horizontal-stretch: 1;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+                            if g.button != "": Button {
+                                text: g.button;
+                                icon: g.button-icon;
+                                enter-activates: false;
+                                clicked => {
+                                    Notice.open = false;
+                                    Notice.group(i);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // Sin `spacing`: un botón oculto no deja hueco.
+            HorizontalLayout {
+                padding-top: 10px;
+
+                // Siempre están (la trampa de Tab los nombra), pero sin texto no se ven ni se alcanzan.
+                left-btn := Button {
+                    text: Notice.left-text;
+                    icon: Notice.left-icon;
+                    visible: has-left;
+                    enabled: has-left;
+                    max-width: has-left ? 1000px : 0;
+                    enter-activates: false;
+                    clicked => {
+                        Notice.open = false;
+                        Notice.left();
+                    }
+                }
+                Rectangle {
+                    horizontal-stretch: 1;
+                }
+                close-btn := Button {
+                    text: Notice.close-text;
+                    enter-activates: false;
+                    clicked => {
+                        Notice.open = false;
+                        Notice.close();
+                    }
+                }
+                Rectangle {
+                    width: has-main ? 8px : 0;
+                }
+                main-btn := Button {
+                    text: Notice.main-text;
+                    icon: Notice.main-icon;
+                    kind: ButtonKind.primary;
+                    visible: has-main;
+                    enabled: has-main;
+                    max-width: has-main ? 1000px : 0;
+                    enter-activates: false;
+                    clicked => {
+                        Notice.open = false;
+                        Notice.main();
                     }
                 }
             }

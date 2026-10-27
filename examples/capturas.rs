@@ -314,6 +314,65 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     data.set_note(0);
 
+    // Ventana de aviso: un archivo en uso dentro de OBS y «Borrar del todo» de OBS a medias.
+    {
+        use wincleaner::space::notice::failed;
+        use wincleaner::space::recycle::{Fail, Outcome, Reason};
+        const MB: u64 = 1 << 20;
+        let fail = |name: &str, mb: f64, reason| Fail { name: name.into(), size: (mb * MB as f64) as u64, reason };
+        let obs = filas(
+            &[
+                ("folder", "2026-09", "C:\\Users\\ana\\Videos\\OBS\\2026-09", 14.1, "34 %", 0, "", true),
+                ("folder", "2026-08", "C:\\Users\\ana\\Videos\\OBS\\2026-08", 9.8, "24 %", 1, "", true),
+                ("file", "directo_aniversario.mkv", "Vídeo · 12/07/2026", 6.2, "15 %", 2, "", true),
+                ("file", "partida_ranked_03.mkv", "Vídeo · 30/06/2026", 3.9, "9 %", 3, "", true),
+                ("file", "prueba_micro.mkv", "Vídeo · 28/06/2026", 1.1, "3 %", 4, "", true),
+                ("file", "clip_0412.mp4", "Vídeo · 14/06/2026", 0.8, "2 %", 5, "", true),
+            ],
+            41.2,
+        );
+        let users = vec![(4120, "OBS Studio".to_string())];
+        let uso = Outcome {
+            names: vec!["directo_aniversario.mkv".into()],
+            failed: vec![fail("directo_aniversario.mkv", 6.2 * 1024.0, Reason::InUse)],
+            users: users.clone(),
+            ..Default::default()
+        };
+        let mut uso = failed(&uso, false, true, false, false);
+        // La ruta y el tamaño los pone quien abre el aviso (decisión 10).
+        uso.lines = vec![("C:\\Users\\ana\\Videos\\OBS\\directo_aniversario.mkv".into(), "6,2 GB".into())];
+        let parcial = Outcome {
+            names: vec!["OBS".into()],
+            sent: 38 << 30,
+            failed: vec![
+                fail("directo_aniversario.mkv", 1700.0, Reason::InUse),
+                fail("prueba_micro.mkv", 1100.0, Reason::InUse),
+                fail("partida_ranked_03.mkv", 374.0, Reason::InUse),
+                fail("2026-08\\cache", 80.0, Reason::Denied),
+                fail("2026-08\\thumbs", 16.0, Reason::Denied),
+            ],
+            users,
+            ..Default::default()
+        };
+        let parcial = failed(&parcial, true, false, false, true);
+        let solo_obs = filas(&[("folder", "OBS", "C:\\Users\\ana\\Videos\\OBS", 3.2, "100 %", 0, "", true)], 3.2);
+        for (nombre, filas, migas, selected, n) in [
+            ("aviso-uso", &obs, &["Este equipo", "C:", "Usuarios", "ana", "Vídeos", "OBS"][..], 2, uso),
+            ("resultado-parcial", &solo_obs, &["Este equipo", "C:", "Usuarios", "ana", "Vídeos"][..], 0, parcial),
+        ] {
+            data.set_rows(filas.0.clone());
+            data.set_strip(filas.1.clone());
+            data.set_crumbs(crumbs(migas));
+            data.set_selected(selected);
+            data.set_subtitle("C: · 412 GB usados de 476 GB · analizado hace 2 min".into());
+            wincleaner::ui::notice(&app, &n, |_| {});
+            for (suffix, w, h) in [("", 1100, 720), ("-min", 880, 600)] {
+                guarda(&format!("wcvt-{nombre}{suffix}"), &headless::render(app.window(), w, h), w, h)?;
+            }
+            app.global::<wincleaner::ui::Notice>().set_open(false);
+        }
+    }
+
     // Juegos, con los datos de `GAMES` de las maquetas: lista, confirmar y vacío.
     use wincleaner::ui::{GameRow, GamesData};
     let games = [

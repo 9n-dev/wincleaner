@@ -1,7 +1,7 @@
 // Sección Espacio: pestañas, aviso de resultado y Carpetas (unidades → analizando → carpeta).
 // Todo llega por `SpaceData`.
 import { Palette, Type, Icon } from "../theme.slint";
-import { Button, ButtonKind, Note, Pill, Seg, Bar, EmptyState, Tone, Tile } from "../widgets.slint";
+import { Button, ButtonKind, Note, Pill, Seg, Bar, EmptyState, Tone, Tile, ListView } from "../widgets.slint";
 import { Head, ListBox } from "clean.slint";
 import { GamesData, GameList } from "games.slint";
 import { DupsData, DupsText, DupsChoose, DupsSearching, DupsToolbar, DupsList } from "dups.slint";
@@ -578,27 +578,23 @@ export component SpacePage inherits Rectangle {
             preferred-height: SpaceData.rows.length * 68px;
             min-height: 100px;
 
-            Flickable {
+            // Solo existen las filas que se ven: una carpeta de 100 000 archivos no congela la ventana.
+            ListView {
                 vertical-stretch: 1;
-                content-width: self.width;
-                content-height: list.preferred-height;
 
-                list := VerticalLayout {
-                    width: parent.width;
-                    for row[i] in SpaceData.rows: SpaceItem {
-                        item: row;
-                        top: SpaceData.rows[0].share;
-                        first: i == 0;
-                        compact: root.compact;
-                        selected: SpaceData.selected == i;
-                        select => {
-                            SpaceData.selected = i;
-                            SpaceData.select(i);
-                        }
-                        enter => { SpaceData.enter(i); }
-                        open => { SpaceData.open(i); }
-                        recycle => { SpaceData.recycle(i); }
+                for row[i] in SpaceData.rows: SpaceItem {
+                    item: row;
+                    top: SpaceData.rows[0].share;
+                    first: i == 0;
+                    compact: root.compact;
+                    selected: SpaceData.selected == i;
+                    select => {
+                        SpaceData.selected = i;
+                        SpaceData.select(i);
                     }
+                    enter => { SpaceData.enter(i); }
+                    open => { SpaceData.open(i); }
+                    recycle => { SpaceData.recycle(i); }
                 }
             }
         }

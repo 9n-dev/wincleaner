@@ -5,10 +5,15 @@ use std::rc::Rc;
 
 use slint::{ComponentHandle, VecModel};
 
+use crate::space::notice::{self, Act};
+
 slint::include_modules!();
 
 #[cfg(not(windows))]
 pub mod headless;
+
+/// Acciones de la ventana de aviso abierta, [izquierda, principal, grupos…], y a quién dárselas.
+type NoticeActs = (Vec<Option<Act>>, Box<dyn Fn(Act)>);
 
 thread_local! {
     // Acción del modal abierto. Se saca al confirmar o al cancelar, así que nunca se
@@ -16,6 +21,8 @@ thread_local! {
     static PENDING: RefCell<Option<Box<dyn FnOnce()>>> = RefCell::new(None);
     // Acción del botón alternativo («Borrar del todo…») del modal abierto.
     static ALT: RefCell<Option<Box<dyn FnOnce()>>> = RefCell::new(None);
+    // Se sacan al pulsar o al cerrar, así que cada una se da una sola vez.
+    static NOTICE: RefCell<Option<NoticeActs>> = RefCell::new(None);
 }
 
 /// Contenido del modal.
@@ -54,6 +61,26 @@ pub fn install_modal(app: &AppWindow) {
     let p = app.global::<Purge>();
     p.on_confirm(ok);
     p.on_cancel(cancel);
+
+    // Cierra la ventana y, después, da la acción `k`: puede abrir otro modal («Borrar del todo…»).
+    let run = |w: slint::Weak<AppWindow>, k: usize| {
+        move || {
+            if let Some(app) = w.upgrade() {
+                app.global::<Notice>().set_open(false);
+            }
+            if let Some((mut acts, on)) = NOTICE.take()
+                && let Some(act) = acts.get_mut(k).and_then(Option::take)
+            {
+                on(act);
+            }
+        }
+    };
+    let n = app.global::<Notice>();
+    n.on_left(run(app.as_weak(), 0));
+    n.on_main(run(app.as_weak(), 1));
+    let w = app.as_weak();
+    n.on_group(move |i| run(w.clone(), 2 + i as usize)());
+    n.on_close(|| drop(NOTICE.take()));
 }
 
 /// Rellena el modal y lo abre. `on_ok` solo se ejecuta si se confirma este modal.
@@ -85,4 +112,41 @@ pub fn purge(app: &AppWindow, lines: Vec<ModalLine>, text: &str, on_ok: impl FnO
     ALT.set(None);
     PENDING.set(Some(Box::new(on_ok)));
     p.set_open(true);
+}
+
+/// Rellena la ventana de aviso con `n` y la abre. Al pulsar un botón se cierra y, después,
+/// se llama a `on` con su acción; «Cerrar», Intro y Esc no llaman a nada.
+pub fn notice(app: &AppWindow, n: &notice::Notice, on: impl Fn(Act) + 'static) {
+    let w = app.global::<Notice>();
+    let act = |b: &Option<notice::Button>| b.as_ref().map(|b| b.act.clone());
+    let text = |b: &Option<notice::Button>| b.as_ref().map_or("", |b| b.text.as_str()).into();
+    let icon = |b: &Option<notice::Button>| b.as_ref().map_or("", |b| b.icon).into();
+    w.set_title(n.title.as_str().into());
+    w.set_text(n.text.as_str().into());
+    w.set_done(n.done.as_str().into());
+    w.set_head(n.head.as_str().into());
+    w.set_left_text(text(&n.left));
+    w.set_left_icon(icon(&n.left));
+    w.set_close_text(n.close.into());
+    w.set_main_text(text(&n.main));
+    w.set_main_icon(icon(&n.main));
+    let lines: Vec<ModalLine> = n.lines.iter().map(|(l, v)| ModalLine { label: l.as_str().into(), value: v.as_str().into() }).collect();
+    w.set_lines(Rc::new(VecModel::from(lines)).into());
+    let groups: Vec<NoticeGroup> = n
+        .groups
+        .iter()
+        .map(|g| NoticeGroup {
+            icon: g.icon.into(),
+            title: g.title.as_str().into(),
+            meta: g.meta.as_str().into(),
+            names: g.names.as_str().into(),
+            button: text(&g.button),
+            button_icon: icon(&g.button),
+        })
+        .collect();
+    w.set_groups(Rc::new(VecModel::from(groups)).into());
+    let mut acts = vec![act(&n.left), act(&n.main)];
+    acts.extend(n.groups.iter().map(|g| act(&g.button)));
+    NOTICE.set(Some((acts, Box::new(on))));
+    w.set_open(true);
 }
