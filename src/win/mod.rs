@@ -6,6 +6,7 @@ pub mod icon;
 pub mod proc;
 pub mod recycle;
 pub mod reg;
+pub mod rm;
 pub mod services;
 pub mod startup;
 pub mod trust;
@@ -53,6 +54,7 @@ use wincleaner::categories::Env;
 use wincleaner::checks::{self, Places};
 use wincleaner::paths::{is_valid, strip_verbatim};
 use wincleaner::space::zones::Zones;
+use wincleaner::space::{Open, explorer_target};
 
 // winapi 0.3.9 no declara IsUserAnAdmin, aunque shell32 la exporta.
 #[link(name = "shell32")]
@@ -239,13 +241,20 @@ fn volume_label(w: &[u16]) -> String {
     String::from_utf16_lossy(&buf[..len])
 }
 
-/// Abre el Explorador con `path` seleccionado. Se lanza por ruta absoluta: con solo
-/// `explorer.exe`, Windows buscaría antes en la carpeta del `.exe` portable.
-pub fn open_in_explorer(path: &Path) {
-    let Some(windows) = known_folder(&FOLDERID_Windows) else { return };
-    let _ = Command::new(windows.join("explorer.exe"))
-        .raw_arg(format!("/select,\"{}\"", path.display()))
-        .spawn();
+/// Abre `path` en el Explorador: una carpeta se abre y un archivo se selecciona en la suya, según
+/// `space::explorer_target`. `explorer.exe` se lanza por ruta absoluta: con solo `explorer.exe`,
+/// Windows buscaría antes en la carpeta del `.exe` portable.
+pub fn open_in_explorer(path: &Path, is_dir: bool, odd: bool) {
+    match explorer_target(path, is_dir, odd) {
+        Some(Open::Folder(p)) => open_folder(&p),
+        Some(Open::Select(p)) => {
+            let Some(windows) = known_folder(&FOLDERID_Windows) else { return };
+            let _ = Command::new(windows.join("explorer.exe"))
+                .raw_arg(format!("/select,\"{}\"", p.display()))
+                .spawn();
+        }
+        None => {}
+    }
 }
 
 /// `C:\\Windows`, para saber qué procesos son de Windows.

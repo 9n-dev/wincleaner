@@ -4,9 +4,13 @@ use crate::categories::is_link;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 pub type Id = u32;
+
+/// Archivo leído al entrar: nombre, tamaño, mtime y nombre no Unicode.
+pub type Entry = (Box<str>, u64, u32, bool);
 
 /// Archivos que se guardan por carpeta; el resto se agrupa en un `Rest`.
 pub const FILES_PER_DIR: usize = 50;
@@ -17,6 +21,8 @@ pub enum Kind {
     File,
     /// «N archivos más pequeños»: N va en `len` y no tiene hijos.
     Rest,
+    /// `Rest` ya leído: sus archivos van en `first..first + len`.
+    Opened,
     /// Carpeta que no se pudo leer; su tamaño es desconocido.
     Denied,
     /// Enlace o junction: tamaño 0 y no se entra.
@@ -144,24 +150,73 @@ impl Tree {
         self.files
     }
 
+    /// Hijos de una carpeta, también los de sus bloques `Opened` (el nodo `Opened` no sale).
+    fn kids(&self, id: Id) -> impl Iterator<Item = Id> + '_ {
+        let n = self.node(id);
+        let (first, len) = if n.kind == Kind::Dir { (n.first, n.len) } else { (0, 0) };
+        (first..first + len).flat_map(move |c| {
+            let k = self.node(c);
+            let (f, l) = if k.kind == Kind::Opened { (k.first, k.len) } else { (c, 1) };
+            f..f + l
+        })
+    }
+
     /// Hijos que siguen en pie, de mayor a menor y con el `Rest` al final.
     pub fn children(&self, id: Id) -> Vec<Id> {
-        let n = self.node(id);
-        if n.kind != Kind::Dir {
-            return Vec::new();
-        }
-        let mut v: Vec<Id> = (n.first..n.first + n.len).filter(|&c| !self.node(c).gone).collect();
+        let mut v: Vec<Id> = self.kids(id).filter(|&c| !self.node(c).gone).collect();
         v.sort_by_key(|&c| (self.node(c).kind == Kind::Rest, Reverse(self.node(c).size)));
         v
     }
 
-    /// `children` partido en (las `max` más grandes con el `Rest` detrás, las que no caben):
-    /// una carpeta con 20 000 subcarpetas no puede ser 20 000 filas.
-    pub fn split_children(&self, id: Id, max: usize) -> (Vec<Id>, Vec<Id>) {
-        let (mut shown, rest): (Vec<Id>, Vec<Id>) = self.children(id).into_iter().partition(|&c| self.node(c).kind != Kind::Rest);
-        let hidden = shown.split_off(max.min(shown.len()));
-        shown.extend(rest);
-        (shown, hidden)
+    /// La carpeta tiene un `Rest` en pie: sus archivos pequeños no están en el árbol.
+    pub fn needs_read(&self, dir: Id) -> bool {
+        self.kids(dir).any(|c| self.node(c).kind == Kind::Rest && !self.node(c).gone)
+    }
+
+    /// Cuelga de `dir` los archivos que hay ahora (`read_files`) sin mover ningún `Id`: el `Rest`
+    /// pasa a `Opened` y apunta a un bloque nuevo; los totales de arriba se corrigen.
+    pub fn expand(&mut self, dir: Id, files: Vec<Entry>) {
+        let Some(rest) = self.kids(dir).find(|&c| self.node(c).kind == Kind::Rest && !self.node(c).gone) else { return };
+        let mut by_name: HashMap<&str, usize> = HashMap::with_capacity(files.len());
+        for (i, f) in files.iter().enumerate().filter(|(_, f)| !f.3) {
+            by_name.insert(&f.0, i);
+        }
+        let mut taken = vec![false; files.len()];
+        let old: Vec<Id> = self.kids(dir).filter(|&c| self.node(c).kind == Kind::File).collect();
+        for id in old {
+            let n = self.node(id);
+            let hit = if n.odd { None } else { by_name.get(&*n.name).copied() };
+            if n.gone {
+                if let Some(i) = hit {
+                    taken[i] = true;
+                }
+                continue;
+            }
+            let Some(i) = hit else { self.remove(id); continue };
+            taken[i] = true;
+            let (old_size, (_, size, m, _)) = (n.size, &files[i]);
+            self.nodes[id as usize].mtime = *m;
+            if *size != old_size {
+                self.nodes[id as usize].size = *size;
+                let size = *size;
+                self.bump(dir, |x| (x + size).saturating_sub(old_size));
+            }
+        }
+        let first = self.nodes.len() as Id;
+        let mut sum = 0u64;
+        self.nodes.reserve(files.len());
+        for (i, (name, size, m, odd)) in files.into_iter().enumerate() {
+            if taken[i] {
+                continue;
+            }
+            sum += size;
+            self.nodes.push(Node { name, parent: dir, first: 0, len: 0, size, mtime: m, kind: Kind::File, gone: false, odd });
+        }
+        let len = self.nodes.len() as Id - first;
+        let r = &mut self.nodes[rest as usize];
+        let old = std::mem::take(&mut r.size);
+        (r.kind, r.first, r.len) = (Kind::Opened, first, len);
+        self.bump(dir, |x| (x + sum).saturating_sub(old));
     }
 
     /// De la raíz a `id`, ambos incluidos.
@@ -188,9 +243,7 @@ impl Tree {
         let mut cur = 0;
         for c in path.strip_prefix(&self.base).ok()?.components() {
             let name = c.as_os_str().to_str()?;
-            let n = self.node(cur);
-            let mut kids = n.first..n.first + if n.kind == Kind::Dir { n.len } else { 0 };
-            cur = kids.find(|&k| {
+            cur = self.kids(cur).find(|&k| {
                 let k = self.node(k);
                 k.kind != Kind::Rest && !k.odd && (with_gone || !k.gone) && &*k.name == name
             })?;
@@ -262,8 +315,7 @@ impl Tree {
             return self.remove(id);
         }
         let Some(dir) = path.parent().and_then(|d| self.find(d)) else { return };
-        let n = self.node(dir);
-        let Some(r) = (n.first..n.first + n.len).find(|&c| self.node(c).kind == Kind::Rest && !self.node(c).gone && self.node(c).len > 0) else { return };
+        let Some(r) = self.kids(dir).find(|&c| self.node(c).kind == Kind::Rest && !self.node(c).gone && self.node(c).len > 0) else { return };
         let len = self.node(r).len.saturating_sub(1);
         self.nodes[r as usize].len = len;
         self.nodes[r as usize].name = rest_name(len);
@@ -271,6 +323,48 @@ impl Tree {
         self.nodes[r as usize].size = self.node(r).size.saturating_sub(size);
         self.bump(dir, |x| x.saturating_sub(size));
     }
+}
+
+/// Solo los archivos de `dir` (sin enlaces ni carpetas), todos. `None` si no se puede leer o se
+/// cancela; `seen` cuenta los leídos.
+pub fn read_files(dir: &Path, cancel: &AtomicBool, seen: &AtomicU64) -> Option<Vec<Entry>> {
+    let mut v = Vec::new();
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        if cancel.load(Ordering::Relaxed) {
+            return None;
+        }
+        let Ok(md) = std::fs::symlink_metadata(entry.path()) else { continue };
+        if is_link(&md) || !md.is_file() {
+            continue;
+        }
+        let fname = entry.file_name();
+        v.push((fname.to_string_lossy().into(), md.len(), mtime(&md), fname.to_str().is_none()));
+        seen.fetch_add(1, Ordering::Relaxed);
+    }
+    Some(v)
+}
+
+/// Hasta `max` archivos bajo `dir`, en profundidad y sin entrar en enlaces.
+pub fn files_under(dir: &Path, max: usize) -> Vec<PathBuf> {
+    let (mut out, mut stack) = (Vec::new(), vec![dir.to_path_buf()]);
+    while let Some(d) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        for e in rd.flatten() {
+            let Ok(md) = std::fs::symlink_metadata(e.path()) else { continue };
+            if is_link(&md) {
+                continue;
+            }
+            if md.is_dir() {
+                stack.push(e.path());
+            } else if md.is_file() {
+                out.push(e.path());
+                if out.len() >= max {
+                    return out;
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Subcarpetas, enlaces, los `FILES_PER_DIR` archivos más grandes y el `Rest`.
@@ -371,17 +465,109 @@ mod tests {
     }
 
     #[test]
-    fn split_children_caps_and_keeps_rest() {
+    fn expand_shows_all_files() {
+        let root = temp_dir("tr-expand");
+        for i in 1..=55 {
+            write(&root.join(format!("f{i}.bin")), i);
+        }
+        write(&root.join("sub/x.bin"), 1000);
+        let mut t = scan(&root);
+        let sub = t.find(&root.join("sub")).unwrap();
+        assert!(t.needs_read(t.root()));
+        let files = read_files(&root, &AtomicBool::new(false), &AtomicU64::new(0)).unwrap();
+        assert_eq!(files.len(), 55);
+        t.expand(t.root(), files);
+        assert!(!t.needs_read(t.root()));
+        let kids = t.children(t.root());
+        assert_eq!(kids.len(), 56);
+        assert!(kids.iter().all(|&k| matches!(t.node(k).kind, Kind::Dir | Kind::File)));
+        assert_eq!(t.node(kids[0]).name.as_ref(), "sub");
+        assert_eq!(t.node(t.root()).size, 1000 + (1..=55).sum::<u64>());
+        // Los Id de antes siguen valiendo y los archivos nuevos cuelgan de la carpeta.
+        assert_eq!(t.find(&root.join("sub")), Some(sub));
+        let f1 = t.find(&root.join("f1.bin")).unwrap();
+        assert_eq!((t.node(f1).parent, t.path(f1)), (t.root(), root.join("f1.bin")));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn expand_fixes_totals() {
+        let root = temp_dir("tr-expand-fix");
+        for i in 1..=55 {
+            write(&root.join(format!("f{i}.bin")), 10);
+        }
+        write(&root.join("a/x.bin"), 7);
+        let mut t = scan(&root);
+        fs::remove_file(root.join("f1.bin")).unwrap(); // estaba en el Rest o entre los 50
+        fs::remove_file(root.join("f55.bin")).unwrap();
+        write(&root.join("f2.bin"), 500); // ha crecido
+        write(&root.join("nuevo.bin"), 3); // es nuevo
+        let files = read_files(&root, &AtomicBool::new(false), &AtomicU64::new(0)).unwrap();
+        t.expand(t.root(), files);
+        let a = t.find(&root.join("a")).unwrap();
+        assert_eq!(t.node(t.root()).size, 53 * 10 - 10 + 500 + 3 + 7);
+        assert_eq!(t.node(a).size, 7);
+        assert!(t.find(&root.join("f1.bin")).is_none() && t.find(&root.join("f55.bin")).is_none());
+        assert_eq!(t.node(t.find(&root.join("f2.bin")).unwrap()).size, 500);
+        assert!(t.find(&root.join("nuevo.bin")).is_some());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn expand_keeps_gone_and_undo() {
+        let root = temp_dir("tr-expand-gone");
+        for i in 1..=55 {
+            write(&root.join(format!("f{i}.bin")), i);
+        }
+        let mut t = scan(&root);
+        let big = t.find(&root.join("f55.bin")).unwrap();
+        t.remove(big); // enviado a la papelera
+        fs::remove_file(root.join("f55.bin")).unwrap();
+        let files = read_files(&root, &AtomicBool::new(false), &AtomicU64::new(0)).unwrap();
+        t.expand(t.root(), files);
+        t.restore(big); // «Deshacer»
+        assert_eq!(t.node(t.root()).size, (1..=55).sum::<u64>());
+        assert_eq!(t.children(t.root()).len(), 55);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn forget_in_opened_block() {
+        let root = temp_dir("tr-expand-forget");
+        for i in 1..=55 {
+            write(&root.join(format!("f{i}.bin")), i);
+        }
+        let mut t = scan(&root);
+        t.expand(t.root(), read_files(&root, &AtomicBool::new(false), &AtomicU64::new(0)).unwrap());
+        t.forget(&root.join("f1.bin"), 1);
+        assert!(t.find(&root.join("f1.bin")).is_none());
+        assert_eq!(t.node(t.root()).size, (2..=55).sum::<u64>());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn expand_100k_is_fast() {
         let mut t = Tree::new("C:\\");
-        let kids = (1..=5u64).map(|i| (format!("d{i}").into(), Kind::Dir, i * 10, 0)).chain([("r".into(), Kind::Rest, 1, 7)]).collect();
-        t.add_children(t.root(), kids);
+        t.add_children(t.root(), vec![("r".into(), Kind::Rest, 100_000, 100_000)]);
         t.finish();
-        let (shown, hidden) = t.split_children(t.root(), 3);
-        let n = |v: &[Id]| v.iter().map(|&c| t.node(c).name.to_string()).collect::<Vec<_>>();
-        assert_eq!(n(&shown), ["d5", "d4", "d3", "r"]);
-        assert_eq!(n(&hidden), ["d2", "d1"]);
-        let (shown, hidden) = t.split_children(t.root(), 200);
-        assert_eq!((shown.len(), hidden.len()), (6, 0));
+        let files: Vec<Entry> = (0..100_000u32).map(|i| (format!("f{i:06}").into(), u64::from(i), 0, false)).collect();
+        let start = std::time::Instant::now();
+        t.expand(t.root(), files);
+        let kids = t.children(t.root());
+        assert_eq!(kids.len(), 100_000);
+        assert!(start.elapsed() < std::time::Duration::from_millis(500), "{:?}", start.elapsed());
+    }
+
+    #[test]
+    fn files_under_caps_and_skips_links() {
+        let root = temp_dir("tr-under");
+        for i in 0..5 {
+            write(&root.join(format!("a/{i}.bin")), 1);
+        }
+        write(&root.join("b/c/z.bin"), 1);
+        assert_eq!(files_under(&root, 100).len(), 6);
+        assert_eq!(files_under(&root, 3).len(), 3);
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[cfg(unix)]
@@ -395,6 +581,8 @@ mod tests {
         let l = t.find(&root.join("l")).unwrap();
         assert_eq!((t.node(l).kind, t.node(l).size), (Kind::Link, 0));
         assert_eq!(t.node(t.root()).size, 0);
+        let files = read_files(&root, &AtomicBool::new(false), &AtomicU64::new(0)).unwrap();
+        assert!(files.is_empty());
         let _ = fs::remove_dir_all(&root);
         let _ = fs::remove_dir_all(&outside);
     }

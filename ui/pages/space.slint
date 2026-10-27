@@ -1,7 +1,7 @@
 // Sección Espacio: pestañas, aviso de resultado y Carpetas (unidades → analizando → carpeta).
 // Todo llega por `SpaceData`.
 import { Palette, Type, Icon } from "../theme.slint";
-import { Button, ButtonKind, Note, Pill, Seg, Bar, EmptyState, Tone, Tile } from "../widgets.slint";
+import { Button, ButtonKind, Note, Pill, Seg, Bar, EmptyState, Tone, Tile, ListView } from "../widgets.slint";
 import { Head, ListBox } from "clean.slint";
 import { GamesData, GameList } from "games.slint";
 import { DupsData, DupsText, DupsChoose, DupsSearching, DupsToolbar, DupsList } from "dups.slint";
@@ -29,7 +29,7 @@ export struct StripPart {
 }
 
 export struct SpaceRow {
-    // folder, file, lock, game o link.
+    // folder, file, lock, game, apps o link.
     icon: string,
     name: string,
     // Ruta, fecha del archivo o «Juntos».
@@ -39,11 +39,12 @@ export struct SpaceRow {
     // Respecto a la carpeta actual, 0..1.
     share: float,
     color: int,
-    // "", Protegida, Sistema, Juegos, Enlace o Sin acceso.
+    // "" o la pastilla del motivo (Juego, Programa, Carpeta de Windows, Protegida…).
     badge: string,
+    // Icono de la pastilla; vacío si no lleva.
+    badge-icon: string,
     can-enter: bool,
-    can-delete: bool,
-    // Carpeta o archivo de verdad: «Abrir en el Explorador» aunque solo se pueda ver.
+    // Todo menos el `Rest`: «Abrir en el Explorador», aunque no se pueda borrar.
     can-open: bool,
     selectable: bool,
 }
@@ -51,8 +52,12 @@ export struct SpaceRow {
 export global SpaceData {
     // 0 Carpetas, 1 Juegos, 2 Duplicados, 3 Instaladores viejos.
     in-out property <int> tab;
-    // 0 unidades, 1 analizando, 2 carpeta.
+    // 0 unidades, 1 analizando, 2 carpeta, 3 leyendo la carpeta.
     in property <int> phase;
+    // Fase 3: «48 210 archivos».
+    in property <string> reading;
+    // «4 carpetas y 1 284 archivos · 41,2 GB»
+    in property <string> count;
     in property <[DriveItem]> drives;
     in property <string> subtitle;
     // «212 GB de 412 GB · 684 210 archivos · 1 min 05 s»
@@ -65,29 +70,22 @@ export global SpaceData {
     in property <[StripPart]> strip;
     in property <[SpaceRow]> rows;
     in-out property <int> selected: -1;
-    // Nota sobre la lista al elegir una fila que no se puede borrar; vacía si no hay.
-    in property <string> lock-title;
-    in property <string> lock-text;
     // Hay carpetas sin acceso en la carpeta actual.
     in property <bool> denied;
-    // Aviso de resultado: 0 nada, 1 ok, 2 error.
+    // Aviso verde de resultado: 0 nada, 1 hecho. Los fallos salen en la ventana de aviso.
     in property <int> note;
     in property <string> note-title;
     in property <string> note-text;
     in property <bool> can-undo;
-    in property <bool> can-retry;
     callback analyze(int);
     callback stop();
     callback reanalyze();
-    // Se ha elegido la fila (ya escrita en `selected`): Rust rellena la nota de bloqueo.
-    callback select(int);
     callback enter(int);
     callback up();
     callback crumb(int);
     callback open(int);
     callback recycle(int);
     callback undo();
-    callback retry();
     callback dismiss();
     callback tab-shown(int);
 }
@@ -265,8 +263,7 @@ component SpaceItem {
             alignment: center;
             Pill {
                 text: root.item.badge;
-                icon: root.item.badge == "Juegos" ? "game" : root.item.badge == "Enlace" ? "link"
-                    : root.item.badge == "Sistema" ? "" : "lock";
+                icon: root.item.badge-icon;
             }
         }
         Text {
@@ -290,25 +287,20 @@ component SpaceItem {
             if root.item.can-open: VerticalLayout {
                 alignment: center;
                 Button {
-                    icon: "folder";
+                    icon: "ext";
                     tip: "Abrir en el Explorador";
                     clicked => { root.open(); }
                 }
             }
-            if root.item.can-delete: VerticalLayout {
+            // En todas: si no se puede borrar, Rust explica por qué.
+            VerticalLayout {
                 alignment: center;
                 Button {
-                    text: root.compact ? "" : "Papelera";
+                    text: root.compact ? "" : "Borrar…";
                     icon: "trash";
-                    tip: "Papelera";
+                    tip: "Borrar…";
                     clicked => { root.recycle(); }
                 }
-            }
-            if !root.item.can-delete: Text {
-                text: "Solo se puede ver";
-                color: Palette.fa;
-                font-size: Type.label;
-                vertical-alignment: center;
             }
         }
     }
@@ -355,7 +347,6 @@ export component SpacePage inherits Rectangle {
     property <bool> installers: SpaceData.tab == 3;
     property <bool> installer-list: root.installers && InstallersData.phase == 1 && InstallersData.rows.length > 0;
     property <int> phase: SpaceData.phase;
-    property <bool> lock: SpaceData.lock-title != "";
 
     VerticalLayout {
         padding-top: root.compact ? 20px : 28px;
@@ -420,20 +411,14 @@ export component SpacePage inherits Rectangle {
 
         if SpaceData.note != 0: Note {
             vertical-stretch: 0;
-            kind: SpaceData.note == 1 ? Tone.ok : Tone.bad;
-            icon: SpaceData.note == 1 ? "check" : "warn";
+            kind: Tone.ok;
+            icon: "check";
             title: SpaceData.note-title;
             text: SpaceData.note-text;
 
             if SpaceData.can-undo: Button {
                 text: "Deshacer";
                 clicked => { SpaceData.undo(); }
-            }
-            if SpaceData.can-retry: Button {
-                text: "Reintentar";
-                // Intro nunca borra.
-                enter-activates: false;
-                clicked => { SpaceData.retry(); }
             }
             Button {
                 icon: "x";
@@ -490,7 +475,8 @@ export component SpacePage inherits Rectangle {
             }
         }
 
-        if root.folders && root.phase == 2: HorizontalLayout {
+        // Mientras se lee la carpeta, las migas y «Volver» siguen activos.
+        if root.folders && root.phase >= 2: HorizontalLayout {
             vertical-stretch: 0;
             spacing: 6px;
             alignment: start;
@@ -514,24 +500,46 @@ export component SpacePage inherits Rectangle {
                 }
             }
         }
-        // La nota de bloqueo de la fila elegida o, si no hay, la de carpetas sin acceso.
-        if root.folders && root.phase == 2 && (root.lock || (SpaceData.denied && !root.admin)): Note {
+        if root.folders && root.phase == 3: Rectangle {
             vertical-stretch: 0;
-            kind: root.lock ? Tone.neutral : Tone.warn;
-            icon: "lock";
-            title: root.lock ? SpaceData.lock-title : "Hay carpetas sin acceso.";
-            text: root.lock ? SpaceData.lock-text
-                : "No se sabe cuánto ocupan. Reinicia WinCleaner como administrador para verlas.";
+            background: Palette.s1;
+            border-width: 1px;
+            border-color: Palette.line;
+            border-radius: 12px;
 
-            if !root.lock: Button {
+            HorizontalLayout {
+                padding: 18px;
+                spacing: 12px;
+                Text {
+                    text: "Leyendo la carpeta…";
+                    color: Palette.tx;
+                    font-weight: 600;
+                    horizontal-stretch: 1;
+                    overflow: elide;
+                }
+                Text {
+                    text: SpaceData.reading;
+                    color: Palette.mu;
+                    font-size: Type.label;
+                    vertical-alignment: center;
+                }
+            }
+        }
+        if root.folders && root.phase == 2 && SpaceData.denied && !root.admin: Note {
+            vertical-stretch: 0;
+            kind: Tone.warn;
+            icon: "lock";
+            title: "Hay carpetas sin acceso.";
+            text: "No se sabe cuánto ocupan. Reinicia WinCleaner como administrador para verlas.";
+
+            Button {
                 text: root.compact ? "" : "Reiniciar como admin.";
                 icon: "shield";
                 accessible-label: "Reiniciar como administrador";
                 clicked => { root.relaunch-admin(); }
             }
         }
-        // Con la nota de bloqueo, la tira deja sitio a la lista (como en la maqueta).
-        if root.folders && root.phase == 2 && !root.lock && SpaceData.strip.length > 0: VerticalLayout {
+        if root.folders && root.phase == 2 && SpaceData.strip.length > 0: VerticalLayout {
             vertical-stretch: 0;
             spacing: 12px;
 
@@ -573,32 +581,40 @@ export component SpacePage inherits Rectangle {
                 }
             }
         }
+        if root.folders && root.phase == 2 && SpaceData.rows.length > 0: HorizontalLayout {
+            vertical-stretch: 0;
+            Text {
+                text: SpaceData.count;
+                color: Palette.fa;
+                font-size: Type.label;
+                horizontal-stretch: 1;
+                overflow: elide;
+            }
+            Text {
+                text: "Ordenado por tamaño";
+                color: Palette.fa;
+                font-size: Type.label;
+            }
+        }
         // Crece hasta su contenido y, si no cabe, se desplaza por dentro.
         if root.folders && root.phase == 2 && SpaceData.rows.length > 0: ListBox {
             preferred-height: SpaceData.rows.length * 68px;
             min-height: 100px;
 
-            Flickable {
+            // Solo existen las filas que se ven: una carpeta de 100 000 archivos no congela la ventana.
+            ListView {
                 vertical-stretch: 1;
-                content-width: self.width;
-                content-height: list.preferred-height;
 
-                list := VerticalLayout {
-                    width: parent.width;
-                    for row[i] in SpaceData.rows: SpaceItem {
-                        item: row;
-                        top: SpaceData.rows[0].share;
-                        first: i == 0;
-                        compact: root.compact;
-                        selected: SpaceData.selected == i;
-                        select => {
-                            SpaceData.selected = i;
-                            SpaceData.select(i);
-                        }
-                        enter => { SpaceData.enter(i); }
-                        open => { SpaceData.open(i); }
-                        recycle => { SpaceData.recycle(i); }
-                    }
+                for row[i] in SpaceData.rows: SpaceItem {
+                    item: row;
+                    top: SpaceData.rows[0].share;
+                    first: i == 0;
+                    compact: root.compact;
+                    selected: SpaceData.selected == i;
+                    select => { SpaceData.selected = i; }
+                    enter => { SpaceData.enter(i); }
+                    open => { SpaceData.open(i); }
+                    recycle => { SpaceData.recycle(i); }
                 }
             }
         }
@@ -611,7 +627,7 @@ export component SpacePage inherits Rectangle {
         if root.dup-results: DupsToolbar { vertical-stretch: 0; }
         if root.dup-list: DupsList { compact: root.compact; }
         if root.installer-list: InstallerList { }
-        // Un solo estado vacío para todo: unidades, analizando, carpeta vacía, sin juegos, sin duplicados y sin instaladores.
+        // Un solo estado vacío para todo: unidades, analizando, leyendo, carpeta vacía, sin juegos, sin duplicados y sin instaladores.
         if !root.game-list && !root.dup-card && !root.dup-list && !root.installer-list && (!root.folders || root.phase != 2 || SpaceData.rows.length == 0): EmptyState {
             preferred-height: 100000px;
             min-height: 120px;
@@ -628,7 +644,9 @@ export component SpacePage inherits Rectangle {
                     + DupsText.mins[DupsData.min] + "). Prueba a buscar en más sitios."
                 : root.installers ? (InstallersData.phase == 0 ? "Los instaladores aparecerán en cuanto termine."
                     : "Buscamos .exe, .msi, .msix e .iso de más de 30 días.")
-                : !root.folders || root.phase == 2 ? ""
+                : !root.folders ? ""
+                : root.phase == 2 ? "No tiene archivos ni carpetas. Puedes borrarla desde la carpeta de arriba."
+                : root.phase == 3 ? "La lista aparecerá en un momento. Puedes volver atrás mientras tanto."
                 : root.phase == 1 ? "Las carpetas aparecerán en cuanto termine."
                 : SpaceData.drives.length > 0 ? "En un disco grande tarda unos minutos. Puedes seguir usando el equipo."
                 : "WinCleaner no ha encontrado ningún disco fijo.";

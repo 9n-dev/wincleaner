@@ -16,6 +16,40 @@ pub enum Block {
     Game,
 }
 
+/// El motivo fino de un bloqueo; `block` lo resume en el `Block` que decide el borrado.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lock {
+    Unclear,
+    Drive,
+    Windows,
+    SystemFile,
+    Programs,
+    Bin,
+    Users,
+    OtherUser,
+    Known(&'static str),
+    Profile,
+    HoldsKnown(&'static str),
+    /// El ejecutable de WinCleaner o su carpeta.
+    Me,
+    /// Una carpeta que tiene dentro la de WinCleaner.
+    HoldsMe,
+    Game,
+    HoldsGames,
+}
+
+impl Lock {
+    pub fn block(self) -> Block {
+        match self {
+            Lock::Unclear | Lock::Drive | Lock::Windows | Lock::Programs | Lock::Bin | Lock::Users
+                | Lock::OtherUser => Block::Protected,
+            Lock::SystemFile => Block::System,
+            Lock::Known(_) | Lock::Profile | Lock::HoldsKnown(_) | Lock::Me | Lock::HoldsMe => Block::Known,
+            Lock::Game | Lock::HoldsGames => Block::Game,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Zones {
     trees: Vec<String>,
@@ -82,30 +116,56 @@ impl Zones {
     }
 
     pub fn check(&self, path: &str) -> Option<Block> {
+        self.lock(path).map(Lock::block)
+    }
+
+    /// El motivo fino por el que `path` no se borra; `check` es `lock(..).map(Lock::block)`.
+    pub fn lock(&self, path: &str) -> Option<Lock> {
         if !is_valid(path) || aliased(path) {
-            return Some(Block::Protected);
+            return Some(Lock::Unclear);
         }
         let c = comps(path);
         if c.len() == 1 {
-            return Some(Block::Protected);
+            return Some(Lock::Drive);
         }
         if c.len() == 2 {
             let n = c[1].to_lowercase();
             if ROOT_FILES.contains(&n.as_str()) || n.starts_with("dumpstack.log") {
-                return Some(Block::System);
+                return Some(Lock::SystemFile);
             }
         }
-        if self.games.iter().any(|g| Self::at_or_in(path, g) || is_inside(g, path)) {
-            return Some(Block::Game);
+        if self.games.iter().any(|g| Self::at_or_in(path, g)) {
+            return Some(Lock::Game);
         }
-        if self.in_tree(path) {
-            return Some(Block::Protected);
+        if self.games.iter().any(|g| is_inside(g, path)) {
+            return Some(Lock::HoldsGames);
         }
-        let named = [&self.profile, &self.exe_dir, &self.exe].into_iter().chain(self.known.iter().map(|k| &k.0));
-        for k in named {
-            if same(path, k) || is_inside(k, path) {
-                return Some(Block::Known);
-            }
+        if !Self::at_or_in(path, &self.profile) && let Some(t) = self.trees.iter().find(|t| Self::at_or_in(path, t)) {
+            return Some(match comps(t).last().map(|n| n.to_lowercase()).as_deref() {
+                Some("program files" | "program files (x86)") => Lock::Programs,
+                Some("$recycle.bin") => Lock::Bin,
+                Some("users") if same(path, t) => Lock::Users,
+                Some("users") => Lock::OtherUser,
+                _ => Lock::Windows,
+            });
+        }
+        if let Some((_, l)) = self.known.iter().find(|(k, _)| same(path, k)) {
+            return Some(Lock::Known(l));
+        }
+        if same(path, &self.profile) {
+            return Some(Lock::Profile);
+        }
+        if [&self.exe, &self.exe_dir].into_iter().any(|k| same(path, k)) {
+            return Some(Lock::Me);
+        }
+        if [&self.exe, &self.exe_dir].into_iter().any(|k| is_inside(k, path)) {
+            return Some(Lock::HoldsMe);
+        }
+        if let Some((_, l)) = self.known.iter().find(|(k, _)| is_inside(k, path)) {
+            return Some(Lock::HoldsKnown(l));
+        }
+        if is_inside(&self.profile, path) {
+            return Some(Lock::HoldsKnown("de usuario"));
         }
         None
     }
@@ -271,5 +331,59 @@ mod tests {
         let z = z().with_games(&[r"E:\Juegos\X".to_string()]);
         assert_eq!(z.check(r"E:\Juegos\X\a"), Some(Block::Game));
         assert_eq!(z.check(r"D:\SteamLibrary\steamapps\common\Baldurs Gate 3"), None);
+    }
+
+    #[test]
+    fn lock_kinds() {
+        let z = z();
+        let l = |p| z.lock(p);
+        assert_eq!(l(r"C:\Windows\x"), Some(Lock::Windows));
+        assert_eq!(l(r"C:\ProgramData"), Some(Lock::Windows));
+        assert_eq!(l(r"C:\Boot\BCD"), Some(Lock::Windows));
+        assert_eq!(l(r"C:\Program Files\Adobe"), Some(Lock::Programs));
+        assert_eq!(l(r"C:\Program Files (x86)"), Some(Lock::Programs));
+        assert_eq!(l(r"D:\$Recycle.Bin\x"), Some(Lock::Bin));
+        assert_eq!(l(r"C:\Users"), Some(Lock::Users));
+        assert_eq!(l(r"C:\Users\pepe\a"), Some(Lock::OtherUser));
+        assert_eq!(l(r"C:\Users\Public"), Some(Lock::OtherUser));
+        assert_eq!(l(r"C:\hiberfil.sys"), Some(Lock::SystemFile));
+        assert_eq!(l(r"C:\"), Some(Lock::Drive));
+        assert_eq!(l(r"C:\PROGRA~1\App"), Some(Lock::Unclear));
+        assert_eq!(l(r"C:\Users\ana\Videos"), Some(Lock::Known("Vídeos")));
+        assert_eq!(l(r"C:\Users\ana"), Some(Lock::Profile));
+        assert_eq!(l(r"C:\Users\ana\Downloads"), Some(Lock::Known("Descargas")));
+        assert_eq!(l(r"C:\Users\ana\Downloads\tools"), Some(Lock::Me));
+        assert_eq!(l(r"C:\Users\ana\Downloads\tools\wincleaner.exe"), Some(Lock::Me));
+        assert_eq!(l(r"D:\SteamLibrary\steamapps\common\Baldurs Gate 3\bin"), Some(Lock::Game));
+        assert_eq!(l(r"D:\SteamLibrary"), Some(Lock::HoldsGames));
+        assert_eq!(l(r"C:\Users\ana\Videos\boda.mov"), None);
+    }
+
+    #[test]
+    fn holds_known_folder() {
+        // Una carpeta que contiene una conocida sin serlo (OneDrive con Documentos dentro).
+        let known = vec![(r"C:\Users\ana\OneDrive\Documents".to_string(), "Documentos")];
+        let z = Zones::new(&[r"C:\".into()], &[r"C:\Windows".into()], r"C:\Users\ana", &known, r"E:\w.exe", &[]);
+        assert_eq!(z.lock(r"C:\Users\ana\OneDrive"), Some(Lock::HoldsKnown("Documentos")));
+    }
+
+    #[test]
+    fn holds_me_is_not_me() {
+        // Una carpeta cualquiera con WinCleaner dentro: no es WinCleaner, pero sigue sin borrarse.
+        let z = Zones::new(&[r"D:\".into()], &[], r"C:\Users\ana", &[], r"D:\Herramientas\wc\wincleaner.exe", &[]);
+        assert_eq!(z.lock(r"D:\Herramientas"), Some(Lock::HoldsMe));
+        assert_eq!(z.lock(r"D:\Herramientas\wc"), Some(Lock::Me));
+        assert_eq!(z.lock(r"D:\Herramientas\wc\wincleaner.exe"), Some(Lock::Me));
+        assert_eq!(z.check(r"D:\Herramientas"), Some(Block::Known));
+        assert_eq!(z.lock(r"D:\Herramientas\otra"), None);
+    }
+
+    #[test]
+    fn check_is_lock_block() {
+        let z = z();
+        for p in [r"C:\", r"C:\Windows", r"C:\pagefile.sys", r"C:\Users\ana", r"C:\Users\ana\Videos\x",
+            r"D:\SteamLibrary", r"C:\Users\pepe", r"C:\PROGRA~1", r"C:\Users\ana\Downloads\tools\wincleaner.exe"] {
+            assert_eq!(z.check(p), z.lock(p).map(Lock::block), "{p}");
+        }
     }
 }

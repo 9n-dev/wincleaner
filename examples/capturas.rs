@@ -154,12 +154,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     data.set_progress("212 GB de 412 GB · 684 210 archivos · 1 min 05 s".into());
     data.set_progress_value(0.51);
     data.set_current("C:\\Users\\ana\\AppData\\Local\\Packages\\…".into());
-    // (icono, nombre, ruta, tamaño en GB, %, color, pastilla, se puede borrar); `total` es la carpeta.
-    type Fila<'a> = (&'a str, &'a str, &'a str, f32, &'a str, i32, &'a str, bool);
+    // (icono, nombre, ruta, tamaño en GB, %, color, pastilla); `total` es la carpeta.
+    type Fila<'a> = (&'a str, &'a str, &'a str, f32, &'a str, i32, &'a str);
     let filas = |v: &[Fila], total: f32| {
         let rows: Vec<SpaceRow> = v
             .iter()
-            .map(|&(icon, name, sub, gb, pct, color, badge, del)| SpaceRow {
+            .map(|&(icon, name, sub, gb, pct, color, badge)| SpaceRow {
                 icon: icon.into(),
                 name: name.into(),
                 sub: sub.into(),
@@ -168,8 +168,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 share: gb / total,
                 color,
                 badge: badge.into(),
+                // Como `badge` de `gui/space.rs`.
+                badge_icon: match badge {
+                    "Juego" | "Juegos" => "game",
+                    "Programa" => "apps",
+                    "Enlace" => "link",
+                    "" | "Sistema" => "",
+                    _ => "lock",
+                }
+                .into(),
                 can_enter: icon == "folder",
-                can_delete: del,
                 can_open: !name.ends_with("más pequeños"),
                 selectable: !name.ends_with("más pequeños"),
             })
@@ -182,34 +190,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let raiz = filas(
         &[
-            ("game", "Steam", "C:\\Program Files (x86)\\Steam", 186.0, "45 %", 0, "Juegos", false),
-            ("folder", "Vídeos", "C:\\Users\\ana\\Videos", 64.0, "16 %", 1, "", true),
-            ("lock", "Windows", "C:\\Windows", 38.0, "9 %", 2, "Protegida", false),
-            ("folder", "Descargas", "C:\\Users\\ana\\Downloads", 29.0, "7 %", 3, "", true),
-            ("lock", "Archivos de programa", "C:\\Program Files", 24.0, "6 %", 4, "Protegida", false),
-            ("file", "hiberfil.sys", "Archivo de hibernación de Windows", 6.4, "2 %", 5, "Sistema", false),
-            ("folder", "AppData", "C:\\Users\\ana\\AppData", 5.9, "1 %", 5, "", true),
+            ("game", "Steam", "C:\\Program Files (x86)\\Steam", 186.0, "45 %", 0, "Juegos"),
+            ("folder", "Vídeos", "C:\\Users\\ana\\Videos", 64.0, "16 %", 1, ""),
+            ("lock", "Windows", "C:\\Windows", 38.0, "9 %", 2, "Protegida"),
+            ("folder", "Descargas", "C:\\Users\\ana\\Downloads", 29.0, "7 %", 3, ""),
+            ("lock", "Archivos de programa", "C:\\Program Files", 24.0, "6 %", 4, "Protegida"),
+            ("file", "hiberfil.sys", "Archivo de hibernación de Windows", 6.4, "2 %", 5, "Sistema"),
+            ("folder", "AppData", "C:\\Users\\ana\\AppData", 5.9, "1 %", 5, ""),
         ],
         412.0,
     );
     let videos = filas(
         &[
-            ("folder", "OBS", "C:\\Users\\ana\\Videos\\OBS", 41.2, "64 %", 0, "", true),
-            ("file", "boda_prima_4K.mov", "14/03/2024", 12.8, "20 %", 1, "", true),
-            ("folder", "Capturas", "C:\\Users\\ana\\Videos\\Captures", 6.1, "10 %", 2, "", true),
-            ("file", "partida_final.mkv", "02/09/2026", 2.4, "4 %", 3, "", true),
-            ("file", "1 284 archivos más pequeños", "Juntos", 1.5, "2 %", 5, "", false),
+            ("folder", "OBS", "C:\\Users\\ana\\Videos\\OBS", 41.2, "64 %", 0, ""),
+            ("file", "boda_prima_4K.mov", "14/03/2024", 12.8, "20 %", 1, ""),
+            ("folder", "Capturas", "C:\\Users\\ana\\Videos\\Captures", 6.1, "10 %", 2, ""),
+            ("file", "partida_final.mkv", "02/09/2026", 2.4, "4 %", 3, ""),
+            ("file", "1 284 archivos más pequeños", "Juntos", 1.5, "2 %", 5, ""),
         ],
         64.0,
     );
     let crumbs = |v: &[&str]| model(v.iter().map(|&c| c.into()).collect::<Vec<slint::SharedString>>());
     app.set_section(2);
-    for (nombre, phase, filas, migas, selected, lock) in [
-        ("espacio", 0, &raiz, &["Este equipo", "C:"][..], -1, false),
-        ("espacio-analizando", 1, &raiz, &["Este equipo", "C:"][..], -1, false),
-        ("espacio-raiz", 2, &raiz, &["Este equipo", "C:"][..], 1, false),
-        ("espacio-carpeta", 2, &videos, &["Este equipo", "C:", "Usuarios", "ana", "Vídeos"][..], 1, false),
-        ("espacio-protegida", 2, &raiz, &["Este equipo", "C:"][..], 2, true),
+    for (nombre, phase, filas, migas, selected) in [
+        ("espacio", 0, &raiz, &["Este equipo", "C:"][..], -1),
+        ("espacio-analizando", 1, &raiz, &["Este equipo", "C:"][..], -1),
+        ("espacio-raiz", 2, &raiz, &["Este equipo", "C:"][..], 1),
+        ("espacio-carpeta", 2, &videos, &["Este equipo", "C:", "Usuarios", "ana", "Vídeos"][..], 1),
+        ("espacio-protegida", 2, &raiz, &["Este equipo", "C:"][..], 2),
     ] {
         data.set_subtitle(
             match phase {
@@ -224,15 +232,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         data.set_strip(filas.1.clone());
         data.set_crumbs(crumbs(migas));
         data.set_selected(selected);
-        data.set_lock_title(if lock { "Windows está protegida." } else { "" }.into());
-        data.set_lock_text(
-            if lock {
-                "Puedes ver qué ocupa, pero no borrarla desde aquí: romperías el sistema. Para liberar espacio de Windows usa «Limpiar»."
-            } else {
-                ""
-            }
-            .into(),
-        );
         for (suffix, w, h) in [("", 1100, 720), ("-min", 880, 600)] {
             guarda(&format!("wces-{nombre}{suffix}"), &headless::render(app.window(), w, h), w, h)?;
         }
@@ -242,50 +241,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let migas = crumbs(&["Este equipo", "C:", "Usuarios", "ana", "Vídeos"]);
     let sin_boda = filas(
         &[
-            ("folder", "OBS", "C:\\Users\\ana\\Videos\\OBS", 41.2, "64 %", 0, "", true),
-            ("folder", "Capturas", "C:\\Users\\ana\\Videos\\Captures", 6.1, "10 %", 1, "", true),
-            ("file", "partida_final.mkv", "02/09/2026", 2.4, "4 %", 2, "", true),
-            ("file", "1 284 archivos más pequeños", "Juntos", 1.5, "2 %", 5, "", false),
+            ("folder", "OBS", "C:\\Users\\ana\\Videos\\OBS", 41.2, "64 %", 0, ""),
+            ("folder", "Capturas", "C:\\Users\\ana\\Videos\\Captures", 6.1, "10 %", 1, ""),
+            ("file", "partida_final.mkv", "02/09/2026", 2.4, "4 %", 2, ""),
+            ("file", "1 284 archivos más pequeños", "Juntos", 1.5, "2 %", 5, ""),
         ],
         51.2,
     );
     let boda = || model(vec![wincleaner::ui::ModalLine { label: "boda_prima_4K.mov".into(), value: "12,8 GB".into() }]);
     let purge = app.global::<wincleaner::ui::Purge>();
     data.set_crumbs(migas);
-    data.set_lock_title("".into());
-    data.set_lock_text("".into());
-    for nombre in ["papelera", "borrar-todo", "hecho", "error"] {
-        let (filas, selected) = if nombre == "hecho" { (&sin_boda, -1) } else { (&videos, if nombre == "error" { -1 } else { 1 }) };
+    for nombre in ["papelera", "borrar-todo", "hecho"] {
+        let (filas, selected) = if nombre == "hecho" { (&sin_boda, -1) } else { (&videos, 1) };
         data.set_rows(filas.0.clone());
         data.set_strip(filas.1.clone());
         data.set_selected(selected);
-        data.set_subtitle(
-            match nombre {
-                "hecho" => "C: · 399 GB usados de 476 GB",
-                "error" => "C: · 412 GB usados de 476 GB · analizado hace 2 min",
-                _ => "C: · 412 GB usados de 476 GB",
-            }
-            .into(),
-        );
-        data.set_note(match nombre {
-            "hecho" => 1,
-            "error" => 2,
-            _ => 0,
-        });
-        data.set_note_title(
-            if nombre == "hecho" { "Enviado a la papelera: boda_prima_4K.mov (12,8 GB)." } else { "No se ha podido borrar todo «OBS»." }.into(),
-        );
-        data.set_note_text(
-            if nombre == "hecho" {
-                "Vacía la papelera en «Limpiar» cuando quieras liberar el espacio."
-            } else {
-                "3 archivos están en uso por otro programa (38 GB se han enviado a la papelera; quedan 3,2 GB). \
-                 Cierra los programas que los usen y vuelve a intentarlo."
-            }
-            .into(),
-        );
+        data.set_subtitle(if nombre == "hecho" { "C: · 399 GB usados de 476 GB" } else { "C: · 412 GB usados de 476 GB" }.into());
+        data.set_note(i32::from(nombre == "hecho"));
+        data.set_note_title("Enviado a la papelera: boda_prima_4K.mov (12,8 GB).".into());
+        data.set_note_text("Vacía la papelera en «Limpiar» cuando quieras liberar el espacio.".into());
         data.set_can_undo(nombre == "hecho");
-        data.set_can_retry(nombre == "error");
         if nombre == "papelera" {
             modal.set_title("¿Enviar a la papelera?".into());
             modal.set_text("".into());
@@ -313,6 +288,219 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         purge.set_open(false);
     }
     data.set_note(0);
+
+    // Ventana de aviso: un archivo en uso dentro de OBS y «Borrar del todo» de OBS a medias.
+    {
+        use wincleaner::space::notice::failed;
+        use wincleaner::space::recycle::{Fail, Outcome, Reason};
+        const MB: u64 = 1 << 20;
+        let fail = |name: &str, mb: f64, reason| Fail { name: name.into(), size: (mb * MB as f64) as u64, reason };
+        let obs = filas(
+            &[
+                ("folder", "2026-09", "C:\\Users\\ana\\Videos\\OBS\\2026-09", 14.1, "34 %", 0, ""),
+                ("folder", "2026-08", "C:\\Users\\ana\\Videos\\OBS\\2026-08", 9.8, "24 %", 1, ""),
+                ("file", "directo_aniversario.mkv", "Vídeo · 12/07/2026", 6.2, "15 %", 2, ""),
+                ("file", "partida_ranked_03.mkv", "Vídeo · 30/06/2026", 3.9, "9 %", 3, ""),
+                ("file", "prueba_micro.mkv", "Vídeo · 28/06/2026", 1.1, "3 %", 4, ""),
+                ("file", "clip_0412.mp4", "Vídeo · 14/06/2026", 0.8, "2 %", 5, ""),
+            ],
+            41.2,
+        );
+        let users = vec![(4120, "OBS Studio".to_string())];
+        let uso = Outcome {
+            names: vec!["directo_aniversario.mkv".into()],
+            failed: vec![fail("directo_aniversario.mkv", 6.2 * 1024.0, Reason::InUse)],
+            users: users.clone(),
+            ..Default::default()
+        };
+        let mut uso = failed(&uso, false, true, false, false);
+        // La ruta entera la pone quien abre el aviso (decisión 10).
+        uso.lines[0].0 = "C:\\Users\\ana\\Videos\\OBS\\directo_aniversario.mkv".into();
+        let permisos = Outcome {
+            names: vec!["Juegos viejos".into()],
+            failed: vec![fail("Juegos viejos", 8.7 * 1024.0, Reason::Denied)],
+            ..Default::default()
+        };
+        let mut permisos = failed(&permisos, false, true, false, true);
+        permisos.lines[0].0 = "C:\\Juegos viejos".into();
+        let noexiste = Outcome {
+            names: vec!["partida_ranked_03.mkv".into()],
+            left: (3.9 * 1024.0 * MB as f64) as u64,
+            missing: true,
+            ..Default::default()
+        };
+        let mut noexiste = failed(&noexiste, false, true, false, false);
+        noexiste.lines[0].0 = "C:\\Users\\ana\\Videos\\OBS\\partida_ranked_03.mkv".into();
+        let viejos = filas(
+            &[
+                ("folder", "Juegos viejos", "C:\\Juegos viejos", 8.7, "2 %", 0, ""),
+                ("folder", "Drivers", "C:\\Drivers", 1.9, "0 %", 1, ""),
+            ],
+            412.0,
+        );
+        let parcial = Outcome {
+            names: vec!["OBS".into()],
+            sent: 38 << 30,
+            failed: vec![
+                fail("directo_aniversario.mkv", 1700.0, Reason::InUse),
+                fail("prueba_micro.mkv", 1100.0, Reason::InUse),
+                fail("partida_ranked_03.mkv", 374.0, Reason::InUse),
+                fail("2026-08\\cache", 80.0, Reason::Denied),
+                fail("2026-08\\thumbs", 16.0, Reason::Denied),
+            ],
+            users,
+            ..Default::default()
+        };
+        let parcial = failed(&parcial, true, false, false, true);
+        let solo_obs = filas(&[("folder", "OBS", "C:\\Users\\ana\\Videos\\OBS", 3.2, "100 %", 0, "")], 3.2);
+        for (nombre, filas, migas, selected, n) in [
+            ("aviso-uso", &obs, &["Este equipo", "C:", "Usuarios", "ana", "Vídeos", "OBS"][..], 2, uso),
+            ("aviso-permisos", &viejos, &["Este equipo", "C:"][..], 0, permisos),
+            ("aviso-noexiste", &obs, &["Este equipo", "C:", "Usuarios", "ana", "Vídeos", "OBS"][..], 3, noexiste),
+            ("resultado-parcial", &solo_obs, &["Este equipo", "C:", "Usuarios", "ana", "Vídeos"][..], 0, parcial),
+        ] {
+            data.set_rows(filas.0.clone());
+            data.set_strip(filas.1.clone());
+            data.set_crumbs(crumbs(migas));
+            data.set_selected(selected);
+            data.set_subtitle("C: · 412 GB usados de 476 GB · analizado hace 2 min".into());
+            wincleaner::ui::notice(&app, &n, |_| {});
+            for (suffix, w, h) in [("", 1100, 720), ("-min", 880, 600)] {
+                guarda(&format!("wcvt-{nombre}{suffix}"), &headless::render(app.window(), w, h), w, h)?;
+            }
+            app.global::<wincleaner::ui::Notice>().set_open(false);
+        }
+    }
+
+    // Ver todo: raíz, carpeta con todos sus archivos, último nivel, carpeta vacía y leyendo.
+    let raiz = filas(
+        &[
+            ("game", "Steam", "C:\\Program Files (x86)\\Steam", 186.0, "45 %", 0, "Juego"),
+            ("folder", "Vídeos", "C:\\Users\\ana\\Videos", 64.0, "16 %", 1, "Carpeta de Windows"),
+            ("lock", "Windows", "C:\\Windows", 38.0, "9 %", 2, "Protegida"),
+            ("folder", "Descargas", "C:\\Users\\ana\\Downloads", 29.0, "7 %", 3, "Carpeta de Windows"),
+            ("apps", "Archivos de programa", "C:\\Program Files", 24.0, "6 %", 4, "Programa"),
+            ("file", "hiberfil.sys", "Archivo de hibernación de Windows", 6.4, "2 %", 5, "Sistema"),
+            ("file", "pagefile.sys", "Memoria virtual de Windows", 4.0, "1 %", 5, "Sistema"),
+            ("folder", "AppData", "C:\\Users\\ana\\AppData", 5.9, "1 %", 5, ""),
+            ("link", "Juegos", "C:\\Juegos → D:\\Juegos", 0.0, "0 %", 5, "Enlace"),
+        ],
+        412.0,
+    );
+    let obs = filas(
+        &[
+            ("folder", "2026-09", "C:\\Users\\ana\\Videos\\OBS\\2026-09", 14.1, "34 %", 0, ""),
+            ("folder", "2026-08", "C:\\Users\\ana\\Videos\\OBS\\2026-08", 9.8, "24 %", 1, ""),
+            ("file", "directo_aniversario.mkv", "Vídeo · 12/07/2026", 6.2, "15 %", 2, ""),
+            ("file", "partida_ranked_03.mkv", "Vídeo · 30/06/2026", 3.9, "9 %", 3, ""),
+            ("file", "prueba_micro.mkv", "Vídeo · 28/06/2026", 1.1, "3 %", 4, ""),
+            ("file", "clip_0412.mp4", "Vídeo · 14/06/2026", 0.8, "2 %", 5, ""),
+        ],
+        41.2,
+    );
+    let ultimo = filas(
+        &[
+            ("file", "2026-09-28 21-04-11.mkv", "Vídeo · 28/09/2026", 2.8, "20 %", 0, ""),
+            ("file", "2026-09-21 20-55-37.mkv", "Vídeo · 21/09/2026", 2.6, "18 %", 1, ""),
+            ("file", "2026-09-14 22-10-02.mkv", "Vídeo · 14/09/2026", 2.1, "15 %", 2, ""),
+            ("file", "2026-09-07 19-30-48.mkv", "Vídeo · 07/09/2026", 1.9, "13 %", 3, ""),
+            ("file", "2026-09-03 23-01-15.mkv", "Vídeo · 03/09/2026", 1.4, "10 %", 4, ""),
+            ("file", "2026-09-02 22-40-51.mkv", "Vídeo · 02/09/2026", 1.3, "9 %", 5, ""),
+            ("file", "2026-09-01 20-15-09.mkv", "Vídeo · 01/09/2026", 1.2, "9 %", 5, ""),
+        ],
+        14.1,
+    );
+    let vacia = (model(Vec::new()), model(Vec::new()));
+    let ana = ["Este equipo", "C:", "Usuarios", "ana"];
+    let ruta = |v: &[&str]| crumbs(&[&ana[..], v].concat());
+    data.set_subtitle("C: · 412 GB usados de 476 GB · analizado hace 2 min".into());
+    data.set_reading("48 210 archivos".into());
+    for (nombre, phase, filas, migas, selected, count) in [
+        ("raiz", 2, &raiz, crumbs(&["Este equipo", "C:"]), 2, "9 carpetas y 6 archivos"),
+        ("carpeta", 2, &obs, ruta(&["Vídeos", "OBS"]), 2, "4 carpetas y 1 284 archivos · 41,2 GB"),
+        ("ultimo", 2, &ultimo, ruta(&["Vídeos", "OBS", "2026-09"]), 0, "7 archivos · 14,1 GB"),
+        ("vacia", 2, &vacia, ruta(&["Vídeos", "OBS", "2026-10"]), -1, ""),
+        ("cargando", 3, &vacia, ruta(&["proyectos", "web", "node_modules"]), -1, ""),
+    ] {
+        data.set_phase(phase);
+        data.set_rows(filas.0.clone());
+        data.set_strip(filas.1.clone());
+        data.set_crumbs(migas);
+        data.set_selected(selected);
+        data.set_count(count.into());
+        for (suffix, w, h) in [("", 1100, 720), ("-min", 880, 600)] {
+            guarda(&format!("wcvt-vt-{nombre}{suffix}"), &headless::render(app.window(), w, h), w, h)?;
+        }
+    }
+    data.set_phase(2);
+
+    // Lo que no se puede borrar: el aviso de `notice::locked` con su botón a donde se arregla.
+    {
+        use wincleaner::space::Why;
+        use wincleaner::space::notice::{Ctx, locked};
+        use wincleaner::space::zones::Lock;
+        let gb = |g: f64| (g * (1u64 << 30) as f64) as u64;
+        let ctx = |name, path, size| Ctx {
+            name,
+            path,
+            size: Some(gb(size)),
+            admin: false,
+            can_enter: true,
+            game: None,
+            xbox: false,
+            link_to: None,
+            link_drive: None,
+        };
+        let bg3 = r"C:\Program Files (x86)\Steam\steamapps\common\Baldur's Gate 3";
+        let juegos = filas(
+            &[
+                ("game", "Baldur's Gate 3", bg3, 118.0, "63 %", 0, "Juego"),
+                ("game", "Stardew Valley", "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Stardew Valley", 0.6, "0 %", 5, "Juego"),
+            ],
+            187.0,
+        );
+        let progs = filas(
+            &[
+                ("apps", "Adobe", "C:\\Program Files\\Adobe", 11.4, "47 %", 0, "Programa"),
+                ("apps", "NVIDIA Corporation", "C:\\Program Files\\NVIDIA Corporation", 3.2, "13 %", 1, "Programa"),
+            ],
+            24.0,
+        );
+        let enlaces = filas(
+            &[
+                ("link", "Documentos", "C:\\Users\\ana\\Documents → D:\\Documentos", 0.0, "", 5, "Enlace"),
+                ("folder", "Escritorio", "C:\\Users\\ana\\Desktop", 2.1, "1 %", 0, "Carpeta de Windows"),
+            ],
+            180.0,
+        );
+        let juego = locked(Why::Zone(Lock::Game), &Ctx { game: Some(("Baldur's Gate 3", "Steam")), ..ctx("Baldur's Gate 3", bg3, 118.0) });
+        let programa = locked(Why::Zone(Lock::Programs), &ctx("Adobe", r"C:\Program Files\Adobe", 11.4));
+        let conocida = locked(Why::Zone(Lock::Known("Descargas")), &ctx("Descargas", r"C:\Users\ana\Downloads", 29.0));
+        let windows = locked(Why::Zone(Lock::Windows), &ctx("Windows", r"C:\Windows", 38.0));
+        let enlace = locked(
+            Why::Link,
+            &Ctx { size: None, link_to: Some(r"D:\Documentos"), link_drive: Some("D:"), ..ctx("Documentos", r"C:\Users\ana\Documents", 0.0) },
+        );
+        let comunes = ["Este equipo", "C:", "Archivos de programa (x86)", "Steam", "steamapps", "common"];
+        for (nombre, filas, migas, selected, n) in [
+            ("juego", &juegos, crumbs(&comunes), 0, juego),
+            ("programa", &progs, crumbs(&["Este equipo", "C:", "Archivos de programa"]), 0, programa),
+            ("conocida", &raiz, crumbs(&["Este equipo", "C:"]), 3, conocida),
+            ("windows", &raiz, crumbs(&["Este equipo", "C:"]), 2, windows),
+            ("enlace", &enlaces, ruta(&[]), 0, enlace),
+        ] {
+            data.set_rows(filas.0.clone());
+            data.set_strip(filas.1.clone());
+            data.set_crumbs(migas);
+            data.set_selected(selected);
+            data.set_count("".into());
+            wincleaner::ui::notice(&app, &n, |_| {});
+            for (suffix, w, h) in [("", 1100, 720), ("-min", 880, 600)] {
+                guarda(&format!("wcvt-aviso-{nombre}{suffix}"), &headless::render(app.window(), w, h), w, h)?;
+            }
+            app.global::<wincleaner::ui::Notice>().set_open(false);
+        }
+    }
 
     // Juegos, con los datos de `GAMES` de las maquetas: lista, confirmar y vacío.
     use wincleaner::ui::{GameRow, GamesData};

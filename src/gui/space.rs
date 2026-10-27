@@ -5,32 +5,37 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
-use slint::{ComponentHandle, ModelRc, Timer, TimerMode, VecModel, Weak};
+use slint::{ComponentHandle, Model, ModelNotify, ModelRc, ModelTracker, SharedString, Timer, TimerMode, VecModel, Weak};
 use wincleaner::categories::is_link;
-use wincleaner::space::{MAX_ROWS, deletable};
+use wincleaner::paths::strip_verbatim;
 use wincleaner::space::dups::{kind, kind_label};
-use wincleaner::space::recycle::{Outcome, Reason, outcome_text, outermost, undo_text};
-use wincleaner::space::tree::{Id, Kind, Node, Tree};
-use wincleaner::space::zones::{Block, Zones};
+use wincleaner::space::notice::{self, Act, Ctx};
+use wincleaner::space::recycle::{Fail, Outcome, Reason, done_text, outermost, undo_text};
+use wincleaner::space::tree::{self, Id, Kind, Node, Tree, files_under, read_files};
+use wincleaner::space::zones::{Block, Lock, Zones};
+use wincleaner::space::{count_text, deletable, why};
 use wincleaner::ui::{self, AppWindow, Confirm, DriveItem, ModalLine, SpaceData, SpaceRow, StripPart, confirm_with_alt};
 use wincleaner::{clean, format};
 
+use super::games;
 use crate::win;
 use crate::win::recycle::Report;
 
 /// Un análisis concreto: raíz de la unidad y cuándo terminó. Los `Id` solo valen en ese árbol.
 type At = (String, Instant);
 type After = Box<dyn FnOnce(&AppWindow, &Report)>;
+/// Lo que hacen los botones de los avisos que llevan a otra sección (`Space::on_act`).
+type Route = Rc<dyn Fn(&AppWindow, Act)>;
 /// «Reintentar»: lo pone quien pide el borrado.
 pub(super) type Retry = Rc<dyn Fn(&Space, &AppWindow)>;
 /// Se mira en el hilo, justo antes de enviar cada elemento: `false` lo deja fuera como `Changed`.
 pub(super) type Still = Box<dyn Fn(&Path) -> bool + Send>;
 
-/// Lo que deja el último borrado para «Deshacer» y «Reintentar».
+/// Lo que deja el último borrado para «Deshacer», «Reintentar» y «Borrar del todo…».
 #[derive(Default)]
 struct Last {
     names: Vec<String>,
@@ -38,6 +43,8 @@ struct Last {
     /// Nodos enviados a la papelera, con el árbol de cada uno: al deshacer vuelven a verse.
     ids: Vec<(At, PathBuf, Id)>,
     retry: Option<Retry>,
+    /// Solo desde Carpetas: vuelve a preguntar «¿Borrar del todo?».
+    purge: Option<Retry>,
 }
 
 #[derive(Default)]
@@ -58,9 +65,19 @@ struct State {
     timer: Option<Timer>,
     /// Refresca «analizado hace X min» cada minuto.
     clock: Timer,
+    /// Hay una carpeta leyéndose al entrar: `true` en su `cancel` la detiene; el `Timer` pinta la
+    /// cuenta; el número es `rev` al empezar.
+    reading: Option<(Arc<AtomicBool>, Timer, u64)>,
+    /// Sube cada vez que un borrado, un «Deshacer» o `forget` cambian los árboles: una lectura
+    /// empezada antes ya no cuadra con el árbol y se repite.
+    rev: u64,
+    /// Hay un borrado o un «Deshacer» de Espacio en marcha: una lectura que vuelve entonces no
+    /// sabe qué queda, así que se descarta y `repaint` la repite al acabar.
+    busy: bool,
     last: Last,
     /// Lo que hace quien pidió el borrado en curso, al volver.
     after: Option<After>,
+    route: Option<Route>,
 }
 
 thread_local! {
@@ -97,45 +114,73 @@ fn name(tree: &Tree, id: Id, zones: Option<&Zones>) -> String {
     label.map_or_else(|| if id == tree.root() { n.trim_end_matches('\\') } else { n }.to_string(), Into::into)
 }
 
-/// Se puede abrir en el Explorador: una carpeta o un archivo de verdad con la ruta exacta
-/// (aunque sea solo para ver; abrir nunca borra).
-fn openable(n: &Node) -> bool {
-    matches!(n.kind, Kind::Dir | Kind::File) && !n.odd
+/// Zona en la que cae la fila; un `Rest` no tiene ruta propia.
+fn lock_of(n: &Node, path: &Path, zones: Option<&Zones>) -> Option<Lock> {
+    if matches!(n.kind, Kind::Rest | Kind::Opened) {
+        return None;
+    }
+    zones.and_then(|z| z.lock(&path.to_string_lossy()))
+}
+
+/// La pastilla de la fila y su icono (decisión 12).
+fn badge(lock: Option<Lock>, kind: Kind) -> (&'static str, &'static str) {
+    match (kind, lock) {
+        (Kind::Link, _) => ("Enlace", "link"),
+        (Kind::Denied, _) => ("Sin acceso", "lock"),
+        (_, Some(Lock::Game)) => ("Juego", "game"),
+        (_, Some(Lock::HoldsGames)) => ("Juegos", "game"),
+        (_, Some(Lock::Programs)) => ("Programa", "apps"),
+        (_, Some(Lock::Known(_) | Lock::Profile | Lock::HoldsKnown(_))) => ("Carpeta de Windows", "lock"),
+        (_, Some(Lock::SystemFile)) => ("Sistema", ""),
+        (_, Some(Lock::Me | Lock::HoldsMe)) => ("WinCleaner", "lock"),
+        (_, Some(Lock::Unclear | Lock::Drive | Lock::Windows | Lock::Bin | Lock::Users | Lock::OtherUser)) => ("Protegida", "lock"),
+        (_, None) => ("", ""),
+    }
 }
 
 /// Fila `i` (por tamaño) de una carpeta que ocupa `total`.
 fn row(tree: &Tree, id: Id, i: usize, total: u64, zones: Option<&Zones>) -> SpaceRow {
     let n = tree.node(id);
     let path = tree.path(id);
-    let block = match n.kind {
-        Kind::Rest => None,
-        _ => zones.and_then(|z| z.check(&path.to_string_lossy())),
-    };
-    let icon = match (n.kind, block) {
+    let lock = lock_of(n, &path, zones);
+    let (pill, pill_icon) = badge(lock, n.kind);
+    let icon = match (n.kind, lock) {
         (Kind::Link, _) => "link",
-        (Kind::Denied, _) | (_, Some(Block::Protected)) => "lock",
-        (_, Some(Block::Game)) => "game",
+        (Kind::Denied, _) => "lock",
+        (_, Some(Lock::Programs)) => "apps",
+        (_, Some(l)) if l.block() == Block::Protected => "lock",
+        (_, Some(Lock::Game | Lock::HoldsGames)) => "game",
         (Kind::Dir, _) => "folder",
         _ => "file",
     };
-    let badge = match (n.kind, block) {
-        (Kind::Link, _) => "Enlace",
-        (Kind::Denied, _) => "Sin acceso",
-        (_, Some(Block::Protected)) => "Protegida",
-        (_, Some(Block::System)) => "Sistema",
-        (_, Some(Block::Game)) => "Juegos",
-        _ => "",
+    // Los archivos de sistema de la raíz dicen qué son.
+    let system = match n.name.to_lowercase().as_str() {
+        _ if lock != Some(Lock::SystemFile) => None,
+        "pagefile.sys" => Some("Memoria virtual de Windows"),
+        "hiberfil.sys" => Some("Archivo de hibernación de Windows"),
+        "swapfile.sys" => Some("Archivo de intercambio de Windows"),
+        _ => None,
     };
-    let sub = match n.kind {
-        Kind::File => format!(
+    let sub = match (n.kind, system) {
+        (_, Some(s)) => s.into(),
+        (Kind::File, _) => format!(
             "{} · {}",
             kind_label(kind(&n.name)),
             format::date_dmy(format::ymd(UNIX_EPOCH + Duration::from_secs(n.mtime.into())))
         ),
-        Kind::Rest => "Juntos".into(),
-        _ => path.display().to_string(),
+        (Kind::Rest | Kind::Opened, _) => "Juntos".into(),
+        // Sin seguirlo: solo se lee a dónde apunta.
+        (Kind::Link, _) => match std::fs::read_link(&path) {
+            Ok(to) => {
+                let to = to.to_string_lossy();
+                format!("{} → {}", path.display(), strip_verbatim(&to).unwrap_or(&to))
+            }
+            Err(_) => path.display().to_string(),
+        },
+        (Kind::Dir | Kind::Denied, _) => path.display().to_string(),
     };
     let denied = n.kind == Kind::Denied;
+    let real = !matches!(n.kind, Kind::Rest | Kind::Opened);
     SpaceRow {
         icon: icon.into(),
         name: name(tree, id, zones).into(),
@@ -144,101 +189,44 @@ fn row(tree: &Tree, id: Id, i: usize, total: u64, zones: Option<&Zones>) -> Spac
         pct: if denied { "".into() } else { format::percent(n.size, total).into() },
         share: if total == 0 { 0.0 } else { (n.size as f64 / total as f64) as f32 },
         // Los cinco más grandes llevan su color de la tira; el `Rest` va con el resto.
-        color: if i < 5 && n.size > 0 && n.kind != Kind::Rest { i as i32 } else { 5 },
-        badge: badge.into(),
+        color: if i < 5 && n.size > 0 && real { i as i32 } else { 5 },
+        badge: pill.into(),
+        badge_icon: pill_icon.into(),
         // Un nombre no Unicode no da una ruta exacta: solo se ve.
         can_enter: n.can_enter(),
-        can_delete: deletable(n, block, zones.is_some()),
-        can_open: openable(n),
-        selectable: n.kind != Kind::Rest,
+        // El Explorador decide qué abrir (`space::explorer_target`); abrir nunca borra.
+        can_open: real,
+        selectable: real,
     }
 }
 
-/// Fila que junta lo que no cabe en la lista (`hidden`): no se elige ni se borra.
-fn more_row(tree: &Tree, hidden: &[Id], total: u64) -> SpaceRow {
-    let size: u64 = hidden.iter().map(|&c| tree.node(c).size).sum();
-    let dirs = hidden.iter().all(|&c| tree.node(c).kind != Kind::File);
-    let name = match (hidden.len(), dirs) {
-        (1, true) => "1 carpeta más".to_string(),
-        (1, false) => "1 elemento más".to_string(),
-        (n, d) => format!("{} {} más", format::count(n as u64), if d { "carpetas" } else { "elementos" }),
-    };
-    SpaceRow {
-        icon: "folder".into(),
-        name: name.into(),
-        sub: "Juntos".into(),
-        size: format::bytes(size).into(),
-        pct: format::percent(size, total).into(),
-        share: if total == 0 { 0.0 } else { (size as f64 / total as f64) as f32 },
-        color: 5,
-        ..Default::default()
-    }
+/// Filas de la carpeta que se ve, construidas al vuelo: Slint solo pide las visibles.
+struct Rows {
+    ids: Vec<Id>,
+    total: u64,
+    notify: ModelNotify,
 }
 
-/// Nota sobre la lista al elegir la fila `id` si no se puede borrar: (título, texto).
-fn lock_note(tree: &Tree, id: Id, zones: Option<&Zones>) -> Option<(String, String)> {
-    let n = tree.node(id);
-    let name = name(tree, id, zones);
-    let note = |t: String, x: &str| Some((t, x.to_string()));
-    if n.odd {
-        return note(
-            format!("No se puede leer bien el nombre de «{name}»."),
-            "Tiene caracteres que Windows no deja leer tal cual. Puedes verlo, pero no borrarlo ni entrar desde aquí, para no equivocarte de archivo.",
-        );
+impl Model for Rows {
+    type Data = SpaceRow;
+
+    fn row_count(&self) -> usize {
+        self.ids.len()
     }
-    match n.kind {
-        Kind::Link => {
-            return note(
-                format!("{name} es un enlace."),
-                "Apunta a otra carpeta: no suma a lo que ocupa esta y no se entra en él desde aquí.",
-            );
-        }
-        Kind::Rest | Kind::Denied => return None,
-        Kind::Dir | Kind::File => {}
+
+    /// Solo lee `STATE`: nunca se pide desde dentro de un `with_borrow_mut`. Si el árbol ya no
+    /// es el de estas filas (otra carpeta, otro análisis), da una fila vacía.
+    fn row_data(&self, i: usize) -> Option<SpaceRow> {
+        let &id = self.ids.get(i)?;
+        let r = STATE.with_borrow(|st| {
+            let (tree, _) = st.trees.get(&st.root)?;
+            (st.kids.get(i) == Some(&id)).then(|| row(tree, id, i, self.total, st.zones.as_ref()))
+        });
+        Some(r.unwrap_or_default())
     }
-    let Some(zones) = zones else {
-        return note(
-            "No se puede borrar nada desde aquí.".into(),
-            "WinCleaner no ha podido saber qué carpetas de Windows tiene que proteger, así que por seguridad todo es solo para ver.",
-        );
-    };
-    let path = tree.path(id).to_string_lossy().into_owned();
-    match zones.check(&path)? {
-        Block::Protected => {
-            // La primera carpeta con nombre propio del camino dice de qué zona es.
-            let zone = tree.crumbs(id).into_iter().find_map(|c| zones.label(&tree.path(c).to_string_lossy()));
-            let why = match zone {
-                Some("Windows") => {
-                    "Puedes ver qué ocupa, pero no borrarla desde aquí: romperías el sistema. Para liberar espacio de Windows usa «Limpiar»."
-                }
-                Some(z) if z.starts_with("Archivos de programa") => {
-                    "Puedes ver qué ocupa, pero no borrarla desde aquí: los programas dejarían de funcionar. Para quitar un programa usa «Programas»."
-                }
-                _ => "Puedes ver qué ocupa, pero no borrarla desde aquí: Windows o tus programas la necesitan.",
-            };
-            note(format!("{name} está protegida."), why)
-        }
-        Block::Known if n.kind == Kind::File => note(format!("{name} es WinCleaner."), "No se puede borrar mientras lo usas."),
-        Block::Known => note(
-            format!("{name} no se puede borrar."),
-            "Es una carpeta que Windows o WinCleaner necesitan. Lo que hay dentro sí: entra y elige qué borrar.",
-        ),
-        Block::System if n.name.to_lowercase().starts_with("boot") => {
-            note(format!("{name} es un archivo del sistema."), "Windows lo necesita para arrancar.")
-        }
-        Block::System => note(
-            format!("{name} es un archivo del sistema."),
-            "Windows lo usa y lo vuelve a crear. Para que ocupe menos, cambia la memoria virtual o la hibernación en la configuración de Windows.",
-        ),
-        // Lleva un juego dentro (la biblioteca de Steam, `Program Files (x86)`…), pero no es uno.
-        Block::Game if !zones.in_game(&path) => note(
-            format!("{name} tiene juegos dentro."),
-            "Si la borras, los lanzadores seguirían creyendo que están instalados. Desinstálalos desde la pestaña Juegos.",
-        ),
-        Block::Game => note(
-            format!("{name} es de un juego."),
-            "Si la borras, el lanzador seguiría creyendo que está instalado. Desinstálalo desde la pestaña Juegos.",
-        ),
+
+    fn model_tracker(&self) -> &dyn ModelTracker {
+        &self.notify
     }
 }
 
@@ -276,43 +264,152 @@ fn units(app: &AppWindow) {
     data.set_phase(0);
 }
 
-/// La carpeta `STATE.cur` de la unidad `STATE.root`; sin análisis, las unidades.
+/// Migas de la carpeta `cur`: «Este equipo», la raíz y sus carpetas.
+fn crumbs(tree: &Tree, cur: Id, zones: Option<&Zones>) -> Vec<SharedString> {
+    let mut v = vec!["Este equipo".into()];
+    v.extend(tree.crumbs(cur).into_iter().map(|c| name(tree, c, zones).into()));
+    v
+}
+
+/// La carpeta `STATE.cur` de la unidad `STATE.root`; sin análisis, las unidades. Si le faltan
+/// archivos (tiene un `Rest`), antes los lee en un hilo.
 fn show(app: &AppWindow) {
+    let dir = STATE.with_borrow(|st| {
+        let (tree, _) = st.trees.get(&st.root)?;
+        tree.needs_read(st.cur).then(|| tree.path(st.cur))
+    });
+    match dir {
+        Some(dir) => read(app, dir),
+        None => paint(app),
+    }
+}
+
+/// Pinta la carpeta `STATE.cur` tal como está en el árbol, sin leer nada.
+fn paint(app: &AppWindow) {
     let view = STATE.with_borrow_mut(|st| {
         let State { trees, root, cur, kids, zones, .. } = st;
         let (tree, _) = trees.get(root)?;
         let zones = zones.as_ref();
-        // Las `MAX_ROWS` más grandes y una fila con las demás, que va al final: `kids` sigue
-        // valiendo para cada fila elegible.
-        let (shown, hidden) = tree.split_children(*cur, MAX_ROWS);
-        *kids = shown;
+        *kids = tree.children(*cur);
         let total = tree.node(*cur).size;
-        let mut rows: Vec<SpaceRow> = kids.iter().enumerate().map(|(i, &id)| row(tree, id, i, total, zones)).collect();
-        if !hidden.is_empty() {
-            rows.push(more_row(tree, &hidden, total));
-        }
-        let mut strip: Vec<StripPart> =
-            rows.iter().filter(|r| r.color < 5).map(|r| StripPart { label: r.name.clone(), share: r.share, color: r.color }).collect();
+        // La tira sale de las cinco primeras filas; las demás se piden al pintarse.
+        let mut strip: Vec<StripPart> = kids
+            .iter()
+            .take(5)
+            .enumerate()
+            .map(|(i, &id)| row(tree, id, i, total, zones))
+            .filter(|r| r.color < 5)
+            .map(|r| StripPart { label: r.name, share: r.share, color: r.color })
+            .collect();
         let rest = 1.0 - strip.iter().map(|p| p.share).sum::<f32>();
         if !strip.is_empty() && rest > 0.001 {
             strip.push(StripPart { label: "Resto".into(), share: rest, color: 5 });
         }
-        let mut crumbs = vec!["Este equipo".into()];
-        crumbs.extend(tree.crumbs(*cur).into_iter().map(|c| name(tree, c, zones).into()));
-        let denied = kids.iter().chain(&hidden).any(|&k| tree.node(k).kind == Kind::Denied && !tree.node(k).odd);
-        Some((rows, strip, crumbs, denied, subtitle(st)))
+        let (mut dirs, mut files) = (0, 0);
+        for &k in kids.iter() {
+            match tree.node(k).kind {
+                Kind::Dir | Kind::Denied | Kind::Link => dirs += 1,
+                Kind::File => files += 1,
+                // Un `Rest` sin leer cuenta sus archivos.
+                Kind::Rest => files += u64::from(tree.node(k).len),
+                // No sale: `children()` enseña sus archivos.
+                Kind::Opened => {}
+            }
+        }
+        let count = count_text(dirs, files, (*cur != tree.root()).then_some(total));
+        let denied = kids.iter().any(|&k| tree.node(k).kind == Kind::Denied && !tree.node(k).odd);
+        let rows = Rows { ids: kids.clone(), total, notify: ModelNotify::default() };
+        Some((rows, strip, crumbs(tree, *cur, zones), denied, count, subtitle(st)))
     });
-    let Some((rows, strip, crumbs, denied, sub)) = view else { return units(app) };
+    let Some((rows, strip, crumbs, denied, count, sub)) = view else { return units(app) };
     let data = app.global::<SpaceData>();
-    data.set_rows(model(rows));
+    data.set_rows(ModelRc::new(rows));
     data.set_strip(model(strip));
     data.set_crumbs(model(crumbs));
     data.set_denied(denied);
+    data.set_count(count.into());
     data.set_selected(-1);
-    data.set_lock_title("".into());
-    data.set_lock_text("".into());
     data.set_subtitle(sub.into());
     data.set_phase(2);
+}
+
+/// Detiene la lectura en marcha, si hay: su resultado se descarta.
+fn stop_reading(st: &mut State) {
+    if let Some((c, ..)) = st.reading.take() {
+        c.store(true, Ordering::Relaxed);
+    }
+}
+
+/// «Leyendo la carpeta…»: lee en un hilo los archivos de `dir` (la carpeta `STATE.cur`) y, al
+/// volver, los cuelga del árbol. Mientras, no hay filas: no se puede borrar nada.
+fn read(app: &AppWindow, dir: PathBuf) {
+    let cancel = Arc::new(AtomicBool::new(false));
+    let seen = Arc::new(AtomicU64::new(0));
+    let timer = Timer::default();
+    let (weak, n) = (app.as_weak(), Arc::clone(&seen));
+    timer.start(TimerMode::Repeated, Duration::from_millis(200), move || {
+        if let Some(app) = weak.upgrade() {
+            let n = n.load(Ordering::Relaxed);
+            app.global::<SpaceData>().set_reading(format!("{} archivos", format::count(n)).into());
+        }
+    });
+    let view = STATE.with_borrow_mut(|st| {
+        let at = here(st)?;
+        let (tree, _) = st.trees.get(&st.root)?;
+        let view = (at, st.cur, crumbs(tree, st.cur, st.zones.as_ref()), subtitle(st));
+        stop_reading(st);
+        st.reading = Some((Arc::clone(&cancel), timer, st.rev));
+        st.kids.clear();
+        Some(view)
+    });
+    let Some((at, cur, crumbs, sub)) = view else { return units(app) };
+    let data = app.global::<SpaceData>();
+    data.set_rows(model(Vec::new()));
+    data.set_strip(model(Vec::new()));
+    data.set_crumbs(model(crumbs));
+    data.set_denied(false);
+    data.set_selected(-1);
+    data.set_reading("".into());
+    data.set_subtitle(sub.into());
+    data.set_phase(3);
+    let weak = app.as_weak();
+    std::thread::spawn(move || {
+        let files = read_files(&dir, &cancel, &seen);
+        let _ = weak.upgrade_in_event_loop(move |app| read_done(&app, &cancel, at, cur, files));
+    });
+}
+
+/// Vuelve la lectura: si sigue siendo la de la carpeta que se ve, cuelga los archivos y la pinta.
+/// Si no se pudo leer, se ve tal cual, con su `Rest`. Si el árbol cambió mientras se leía (un
+/// borrado, «Deshacer»), lo leído puede no cuadrar: se descarta y se vuelve a leer (si el
+/// borrado sigue en marcha, al acabar).
+fn read_done(app: &AppWindow, cancel: &Arc<AtomicBool>, at: At, cur: Id, files: Option<Vec<tree::Entry>>) {
+    enum Then {
+        Nothing,
+        Paint,
+        Again,
+    }
+    let then = STATE.with_borrow_mut(|st| {
+        let Some((.., rev)) = st.reading.take_if(|r| Arc::ptr_eq(&r.0, cancel)) else { return Then::Nothing };
+        if here(st) != Some(at) || st.cur != cur {
+            return Then::Nothing;
+        }
+        if st.busy {
+            return Then::Nothing;
+        }
+        if rev != st.rev {
+            return Then::Again;
+        }
+        if let (Some(files), Some((tree, _))) = (files, st.trees.get_mut(&st.root)) {
+            tree.expand(cur, files);
+        }
+        Then::Paint
+    });
+    match then {
+        Then::Paint => paint(app),
+        Then::Again => show(app),
+        Then::Nothing => {}
+    }
 }
 
 /// El análisis que se ve.
@@ -331,8 +428,10 @@ fn repaint(app: &AppWindow) {
         0 => units(app),
         2 => {
             units(app);
-            show(app);
+            paint(app);
         }
+        // Una lectura descartada durante un borrado se repite.
+        3 if STATE.with_borrow(|st| st.reading.is_none()) => show(app),
         _ => {}
     }
 }
@@ -365,29 +464,134 @@ fn exists(p: &Path) -> bool {
 }
 
 /// Borra del todo lo que pase las zonas sobre la ruta escrita y la final; lo demás es `Protected`.
-/// Lo que sigue en pie después falla con un motivo genérico (`purge` no dice cuál).
-fn purge_all(items: &[PathBuf], zones: &Zones) -> Report {
-    let mut rep = Report::default();
+/// Cada archivo que no se borra sale con su ruta, su tamaño y su motivo.
+fn purge_all(items: &[PathBuf], zones: &Zones) -> Vec<(PathBuf, u64, Reason)> {
+    let mut failed = Vec::new();
     for p in items {
         if !win::recycle::vetted(p, zones) {
-            rep.failed.push((p.clone(), Reason::Protected));
+            failed.push((p.clone(), 0, Reason::Protected));
             continue;
         }
-        clean::purge(p);
-        if exists(p) {
-            rep.failed.push((p.clone(), Reason::Other(0)));
-        }
+        failed.extend(clean::purge(p).failed);
     }
-    rep
+    failed
 }
 
-fn set_note(app: &AppWindow, (ok, title, text): (bool, String, String), undo: bool, retry: bool) {
+/// Lo que queda de `p` (una carpeta se vuelve a leer y va a `scans`, para el árbol).
+fn measure(p: &Path, scans: &mut Vec<(PathBuf, Tree)>) -> u64 {
+    match std::fs::symlink_metadata(p) {
+        Ok(md) if md.is_dir() && !is_link(&md) => {
+            let Some(t) = Tree::scan(p, &AtomicBool::new(false), &mut |_, _, _| {}) else { return 0 };
+            let size = t.node(t.root()).size;
+            scans.push((p.to_path_buf(), t));
+            size
+        }
+        Ok(md) => md.len(),
+        Err(_) => 0,
+    }
+}
+
+fn is_dir(p: &Path) -> bool {
+    std::fs::symlink_metadata(p).is_ok_and(|md| md.is_dir() && !is_link(&md))
+}
+
+/// El aviso verde: lo enviado a la papelera (con «Deshacer») o lo borrado del todo.
+fn set_note(app: &AppWindow, (title, text): (String, String), undo: bool) {
     let data = app.global::<SpaceData>();
-    data.set_note(if ok { 1 } else { 2 });
+    data.set_note(1);
     data.set_note_title(title.into());
     data.set_note_text(text.into());
     data.set_can_undo(undo);
-    data.set_can_retry(retry);
+}
+
+/// Lo que vuelve del hilo de borrado.
+struct Done {
+    rep: Report,
+    /// Lo que queda de cada carpeta que no se borró entera, para el árbol.
+    scans: Vec<(PathBuf, Tree)>,
+    outcome: Outcome,
+    /// Nombres de lo que sí llegó a la papelera.
+    binned: Vec<String>,
+    /// Lo elegido era una sola carpeta.
+    folder: bool,
+    /// Ruta de lo único que ha fallado (o de lo único que ya no estaba), para la línea del aviso.
+    only: Option<PathBuf>,
+}
+
+fn file_name(p: &Path) -> String {
+    p.file_name().unwrap_or(p.as_os_str()).to_string_lossy().into_owned()
+}
+
+/// El borrado en sí, en el hilo de trabajo. `names` va en paralelo a `items` (si no, se usa el
+/// nombre del archivo) y `size` es lo que suman. Lo que no pase `still` no se envía y falla
+/// como `Changed`.
+fn run(purge: bool, items: &[PathBuf], names: &[String], size: u64, still: Option<Still>, zones: &Zones) -> Done {
+    let both = names.len() == items.len();
+    let label = |i: usize| if both { names[i].clone() } else { file_name(&items[i]) };
+    let folder = items.len() == 1 && is_dir(&items[0]);
+    // Lo que ya no existía antes de enviar no se envía ni sale como enviado; si no queda
+    // nada, el aviso lo dice con los nombres de todo.
+    let here: Vec<usize> = (0..items.len()).filter(|&i| exists(&items[i])).collect();
+    let missing = !items.is_empty() && here.is_empty();
+    // Lo que ocupa cada uno antes de enviarlo: si Windows lo borra sin pasar por la papelera,
+    // después ya no se puede medir.
+    let was: Vec<u64> = if items.len() == 1 { vec![size] } else { items.iter().map(|p| std::fs::symlink_metadata(p).map_or(0, |m| m.len())).collect() };
+    let (send, changed): (Vec<PathBuf>, Vec<PathBuf>) = here.iter().map(|&i| items[i].clone()).partition(|p| still.as_ref().is_none_or(|f| f(p)));
+    let mut rep = Report::default();
+    let mut fails = if purge {
+        purge_all(&send, zones)
+    } else {
+        rep = win::recycle::send(&send, zones);
+        std::mem::take(&mut rep.failed).into_iter().map(|(p, r)| (p, 0, r)).collect()
+    };
+    fails.extend(changed.into_iter().map(|p| (p, 0, Reason::Changed)));
+    // Lo que ya no existe (otro programa lo borró mientras) está hecho. Lo que Windows borró sin
+    // pasar por la papelera, también, para quien pidió el borrado, pero el aviso lo cuenta aparte.
+    fails.retain(|(p, _, r)| *r == Reason::Purged || exists(p));
+    rep.failed = fails.iter().filter(|f| f.2 != Reason::Purged).map(|(p, _, r)| (p.clone(), *r)).collect();
+
+    let mut scans = Vec::new();
+    // Una carpeta borrada del todo a medias se vuelve a leer entera, para el árbol. (Si falla ella
+    // misma, nada de dentro ha fallado y se mide abajo.)
+    for p in send.iter().filter(|p| fails.iter().any(|f| f.0 != **p && f.0.starts_with(p))) {
+        measure(p, &mut scans);
+    }
+    let (mut left, mut busy, mut failed) = (0, Vec::new(), Vec::new());
+    for (p, known, r) in &fails {
+        // El elemento elegido del que sale: él mismo o la carpeta que lo contiene.
+        let i = items.iter().position(|e| p.starts_with(e));
+        let inside = i.is_some_and(|i| *p != items[i]);
+        let name = match i {
+            Some(i) if inside => p.strip_prefix(&items[i]).map_or_else(|_| file_name(p), |rel| rel.to_string_lossy().into_owned()),
+            Some(i) => label(i),
+            None => file_name(p),
+        };
+        let size = match r {
+            Reason::Purged => i.map_or(0, |i| was[i]),
+            // Lo que no se pudo borrar dentro de la carpeta, con lo que medía al recorrerla.
+            _ if inside => *known,
+            _ => measure(p, &mut scans),
+        };
+        if *r == Reason::InUse {
+            // ponytail: 1 000 archivos por carpeta; más, si alguna vez no basta.
+            if is_dir(p) { busy.extend(files_under(p, 1000)) } else { busy.push(p.clone()) }
+        }
+        left += size;
+        failed.push(Fail { name, size, reason: *r });
+    }
+    let only = match (fails.as_slice(), items) {
+        ([f], _) => Some(f.0.clone()),
+        ([], [one]) if missing => Some(one.clone()),
+        _ => None,
+    };
+    if missing {
+        left = size;
+    }
+    let binned = rep.binned.iter().filter_map(|(p, _)| items.iter().position(|e| e == p).map(label)).collect();
+    let names = if missing || !both { names.to_vec() } else { here.iter().map(|&i| names[i].clone()).collect() };
+    let users = win::rm::who(&busy);
+    let outcome = Outcome { names, sent: size.saturating_sub(left), left, failed, users, missing };
+    Done { rep, scans, outcome, binned, folder, only }
 }
 
 #[derive(Clone)]
@@ -421,8 +625,6 @@ impl Space {
         let k = c.clone();
         data.on_stop(move || k.with(Self::stop));
         let k = c.clone();
-        data.on_select(move |i| k.with(|app| Self::select(app, i)));
-        let k = c.clone();
         data.on_enter(move |i| {
             k.go(|st| {
                 let (tree, _) = st.trees.get(&st.root)?;
@@ -447,28 +649,22 @@ impl Space {
             })
         });
         data.on_open(|i| {
-            let path = STATE.with_borrow(|st| {
+            let target = STATE.with_borrow(|st| {
                 let (tree, _) = st.trees.get(&st.root)?;
                 let id = *st.kids.get(usize::try_from(i).ok()?)?;
-                openable(tree.node(id)).then(|| tree.path(id))
+                let n = tree.node(id);
+                // Una carpeta sin acceso se abre igual: si Windows no deja entrar, lo dice el
+                // Explorador. Un enlace va como archivo: se selecciona sin seguirlo.
+                (n.kind != Kind::Rest).then(|| (tree.path(id), matches!(n.kind, Kind::Dir | Kind::Denied), n.odd))
             });
-            if let Some(p) = path {
-                win::open_in_explorer(&p);
+            if let Some((p, is_dir, odd)) = target {
+                win::open_in_explorer(&p, is_dir, odd);
             }
         });
         let k = c.clone();
         data.on_recycle(move |i| k.with(|app| k.recycle(app, i)));
         let k = c.clone();
         data.on_undo(move || k.with(|app| k.undo(app)));
-        let k = c.clone();
-        data.on_retry(move || {
-            k.with(|app| {
-                let retry = STATE.with_borrow(|st| st.last.retry.clone());
-                if let Some(f) = retry.filter(|_| !app.get_locked()) {
-                    f(&k, app);
-                }
-            })
-        });
         let k = c.clone();
         data.on_dismiss(move || {
             k.with(|app| {
@@ -487,7 +683,7 @@ impl Space {
         // Solo con una carpeta a la vista: mientras se analiza no hay filas que repintar.
         self.with(|app| {
             if app.global::<SpaceData>().get_phase() == 2 {
-                show(app);
+                paint(app);
             }
         });
     }
@@ -500,6 +696,7 @@ impl Space {
 
     /// Va a la carpeta que diga `to`; si no hay, a las unidades.
     fn go(&self, to: impl FnOnce(&State) -> Option<Id>) {
+        STATE.with_borrow_mut(stop_reading);
         self.with(|app| match STATE.with_borrow(to) {
             Some(id) => {
                 STATE.with_borrow_mut(|st| st.cur = id);
@@ -514,6 +711,7 @@ impl Space {
         let Some(root) = STATE.with_borrow(|st| st.drives.get(usize::try_from(i).ok()?).map(|d| d.root.clone())) else {
             return;
         };
+        STATE.with_borrow_mut(stop_reading);
         if STATE.with_borrow(|st| st.trees.contains_key(&root)) {
             STATE.with_borrow_mut(|st| (st.root, st.cur) = (root, 0));
             return self.with(show);
@@ -547,6 +745,7 @@ impl Space {
             data.set_current(g.2.as_str().into());
         });
         STATE.with_borrow_mut(|st| {
+            stop_reading(st);
             st.trees.remove(&root);
             st.cancel = Some(Arc::clone(&cancel));
             st.timer = Some(timer);
@@ -593,29 +792,15 @@ impl Space {
         units(app);
     }
 
-    fn select(app: &AppWindow, i: i32) {
-        let note = STATE.with_borrow(|st| {
-            let (tree, _) = st.trees.get(&st.root)?;
-            lock_note(tree, *st.kids.get(usize::try_from(i).ok()?)?, st.zones.as_ref())
-        });
-        let (title, text) = note.unwrap_or_default();
-        let data = app.global::<SpaceData>();
-        data.set_lock_title(title.into());
-        data.set_lock_text(text.into());
-    }
-
-    /// «Papelera» en la fila `i`: pregunta, con «Borrar del todo…» como alternativa.
+    /// «Borrar…» en la fila `i`: si se puede, pregunta, con «Borrar del todo…» como alternativa;
+    /// si no, explica por qué.
     fn recycle(&self, app: &AppWindow, i: i32) {
         if app.get_locked() {
             return;
         }
-        let Some((at, id, (_, name, size))) = STATE.with_borrow_mut(|st| {
-            let id = *st.kids.get(usize::try_from(i).ok()?)?;
-            let at = here(st)?;
-            let t = target(st, &at, id)?;
-            Some((at, id, t))
-        }) else {
-            return;
+        let Some((at, id)) = STATE.with_borrow(|st| Some((here(st)?, *st.kids.get(usize::try_from(i).ok()?)?))) else { return };
+        let Some((_, name, size)) = STATE.with_borrow_mut(|st| target(st, &at, id)) else {
+            return self.why_notice(app, id);
         };
         let lines = vec![ModalLine { label: name.into(), value: format::bytes(size).into() }];
         let ask = Confirm {
@@ -632,6 +817,85 @@ impl Space {
         let k = self.clone();
         let on_alt = move || k.with(|app| k.ask_purge(app, at2, id));
         confirm_with_alt(app, ask, on_ok, on_alt);
+    }
+
+    /// Por qué no se puede borrar el nodo `id` de la carpeta que se ve, en la ventana de aviso.
+    /// Sus botones entran en la carpeta, la abren en el Explorador, analizan otra unidad o
+    /// llevan a otra sección (`on_act`).
+    fn why_notice(&self, app: &AppWindow, id: Id) {
+        let admin = app.get_admin();
+        let Some((at, nt, path, is_dir, odd)) = STATE.with_borrow(|st| {
+            let (tree, _) = st.trees.get(&st.root)?;
+            let (n, zones) = (tree.node(id), st.zones.as_ref());
+            let path = tree.path(id);
+            let why = why(n, lock_of(n, &path, zones), zones.is_some())?;
+            // A dónde apunta el enlace, sin seguirlo; su unidad solo si es otra unidad fija.
+            let link_to = (n.kind == Kind::Link).then(|| std::fs::read_link(&path).ok()).flatten().map(|to| {
+                let to = to.to_string_lossy().into_owned();
+                strip_verbatim(&to).map_or(to.clone(), Into::into)
+            });
+            let link_drive = link_to.as_deref().and_then(|to| {
+                let d = st.drives.iter().find(|d| d.root != st.root && to.get(..3).is_some_and(|r| r.eq_ignore_ascii_case(&d.root)))?;
+                Some(d.root.trim_end_matches('\\').to_string())
+            });
+            let (name, p) = (name(tree, id, zones), path.to_string_lossy().into_owned());
+            // Lee el estado de Juegos, no este.
+            let game = games::by_dir(&p);
+            let ctx = Ctx {
+                name: &name,
+                path: &p,
+                size: (!matches!(n.kind, Kind::Denied | Kind::Link)).then_some(n.size),
+                admin,
+                can_enter: n.can_enter(),
+                game: game.as_ref().map(|g| (g.0.as_str(), g.1)),
+                xbox: game.as_ref().is_some_and(|g| g.2),
+                link_to: link_to.as_deref(),
+                link_drive: link_drive.as_deref(),
+            };
+            Some((here(st)?, notice::locked(why, &ctx), path, matches!(n.kind, Kind::Dir | Kind::Denied), n.odd))
+        }) else {
+            return;
+        };
+        let k = self.clone();
+        ui::notice(app, &nt, move |act| {
+            k.with(|app| match act {
+                // Solo si sigue siendo el mismo análisis.
+                Act::Enter => k.go(|st| (here(st).as_ref() == Some(&at)).then_some(id)),
+                Act::Explorer => win::open_in_explorer(&path, is_dir, odd),
+                Act::Analyze(root) => {
+                    let i = STATE.with_borrow(|st| st.drives.iter().position(|d| d.root.eq_ignore_ascii_case(&root)));
+                    if let Some(i) = i {
+                        k.analyze(i as i32);
+                    }
+                }
+                act => k.act(app, act),
+            })
+        });
+    }
+
+    /// Un botón de un aviso: «Reintentar» y «Borrar del todo…» repiten lo que dejó el último
+    /// borrado (si la ventana no está bloqueada); lo demás va al enrutador (`on_act`).
+    fn act(&self, app: &AppWindow, act: Act) {
+        let (retry, purge, route) = STATE.with_borrow(|st| (st.last.retry.clone(), st.last.purge.clone(), st.route.clone()));
+        let again = match act {
+            Act::Retry => retry,
+            Act::Purge => purge,
+            act => {
+                if let Some(f) = route {
+                    f(app, act);
+                }
+                return;
+            }
+        };
+        if let Some(f) = again.filter(|_| !app.get_locked()) {
+            f(self, app);
+        }
+    }
+
+    /// Lo que hacen los botones de los avisos que llevan a otra sección (Juegos, Programas,
+    /// Procesos, reiniciar como administrador, buscar duplicados otra vez).
+    pub(super) fn on_act(&self, f: impl Fn(&AppWindow, Act) + 'static) {
+        STATE.with_borrow_mut(|st| st.route = Some(Rc::new(f)));
     }
 
     /// «¿Borrar del todo?» para el nodo `id` de `at`, con lo que ocupa ahora. Solo borra si se
@@ -660,8 +924,10 @@ impl Space {
             }
         };
         // Reintentar la papelera se repite tal cual (se puede recuperar); borrar del todo vuelve a pedir BORRAR.
-        let retry: Retry = Rc::new(move |k, app| if purge { k.ask_purge(app, at.clone(), id) } else { k.trash(app, at.clone(), id, false) });
-        self.delete(purge, true, vec![path], vec![name], size, Some(retry), None, Box::new(after));
+        let at2 = at.clone();
+        let retry: Retry = Rc::new(move |k, app| if purge { k.ask_purge(app, at2.clone(), id) } else { k.trash(app, at2.clone(), id, false) });
+        let alt: Retry = Rc::new(move |k, app| k.ask_purge(app, at.clone(), id));
+        self.delete(purge, Some(alt), vec![path], vec![name], size, Some(retry), None, Box::new(after));
     }
 
     /// Envía `items` a la papelera en un hilo, con la ventana bloqueada, desde cualquier pestaña.
@@ -678,12 +944,12 @@ impl Space {
         still: Option<Still>,
         after: impl FnOnce(&AppWindow, &Report) + 'static,
     ) {
-        self.delete(false, false, items, names, size, Some(retry), still, Box::new(after));
+        self.delete(false, None, items, names, size, Some(retry), still, Box::new(after));
     }
 
-    /// `alt`: el aviso puede proponer «Borrar del todo…» (solo desde Carpetas).
+    /// `alt`: lo que hace «Borrar del todo…» en el aviso (solo desde Carpetas).
     #[allow(clippy::too_many_arguments)]
-    fn delete(&self, purge: bool, alt: bool, items: Vec<PathBuf>, names: Vec<String>, size: u64, retry: Option<Retry>, still: Option<Still>, after: After) {
+    fn delete(&self, purge: bool, alt: Option<Retry>, items: Vec<PathBuf>, names: Vec<String>, size: u64, retry: Option<Retry>, still: Option<Still>, after: After) {
         let Some(app) = self.0.upgrade().filter(|a| !a.get_locked()) else { return };
         let Some(zones) = STATE.with_borrow(|st| st.zones.clone()) else { return };
         // Sin repetidos ni lo que ya va dentro de otro.
@@ -692,54 +958,25 @@ impl Space {
         let items: Vec<PathBuf> = keep.iter().map(|&i| items[i].clone()).collect();
         // Un borrado nuevo sustituye al aviso anterior y pierde su deshacer.
         STATE.with_borrow_mut(|st| {
-            st.last = Last { retry, ..Last::default() };
+            st.last = Last { retry, purge: alt, ..Last::default() };
             st.after = Some(after);
+            st.busy = true;
         });
         app.global::<SpaceData>().set_note(0);
         app.set_locked(true);
         let k = self.clone();
         std::thread::spawn(move || {
-            // Lo que ya no existía antes de enviar no se envía ni sale como enviado; si no queda
-            // nada, el aviso lo dice con los nombres de todo.
-            let here: Vec<bool> = items.iter().map(|p| exists(p)).collect();
-            let missing = !here.is_empty() && !here.contains(&true);
-            let names = if names.len() == items.len() && !missing {
-                names.into_iter().zip(&here).filter(|(_, h)| **h).map(|(n, _)| n).collect()
-            } else {
-                names
-            };
-            let items: Vec<PathBuf> = items.into_iter().zip(&here).filter(|(_, h)| **h).map(|(p, _)| p).collect();
-            let (items, changed): (Vec<PathBuf>, Vec<PathBuf>) = items.into_iter().partition(|p| still.as_ref().is_none_or(|f| f(p)));
-            let mut rep = if purge { purge_all(&items, &zones) } else { win::recycle::send(&items, &zones) };
-            rep.failed.extend(changed.into_iter().map(|p| (p, Reason::Changed)));
-            // Lo que Windows borró sin pasar por la papelera ya no existe: para quien pidió el
-            // borrado está hecho, pero el aviso lo cuenta aparte.
-            let purged = rep.failed.iter().filter(|f| f.1 == Reason::Purged).count();
-            // Lo que ya no existe (otro programa lo borró mientras) está hecho.
-            rep.failed.retain(|(p, r)| *r != Reason::Purged && exists(p));
-            // Lo que queda de cada fallo: una carpeta se vuelve a leer para el árbol.
-            let (mut left, mut scans) = (0, Vec::new());
-            for (p, _) in &rep.failed {
-                match std::fs::symlink_metadata(p) {
-                    Ok(md) if md.is_dir() && !is_link(&md) => {
-                        if let Some(t) = Tree::scan(p, &AtomicBool::new(false), &mut |_, _, _| {}) {
-                            left += t.node(t.root()).size;
-                            scans.push((p.clone(), t));
-                        }
-                    }
-                    Ok(md) => left += md.len(),
-                    Err(_) => {}
-                }
-            }
-            let failed = rep.failed.iter().map(|f| f.1).chain(std::iter::repeat_n(Reason::Purged, purged)).collect();
-            let outcome = Outcome { names, sent: size.saturating_sub(left), left, failed, missing };
-            let _ = k.0.upgrade_in_event_loop(move |app| Self::deleted(&app, purge, alt, rep, scans, outcome));
+            let done = run(purge, &items, &names, size, still, &zones);
+            let _ = k.0.upgrade_in_event_loop(move |app| Self::deleted(&app, purge, done));
         });
     }
 
-    fn deleted(app: &AppWindow, purge: bool, alt: bool, rep: Report, scans: Vec<(PathBuf, Tree)>, outcome: Outcome) {
+    fn deleted(app: &AppWindow, purge: bool, done: Done) {
+        let Done { rep, scans, outcome, binned, folder, only } = done;
         // En el árbol de la unidad de cada elemento, si está analizada (no tiene por qué ser la que se ve).
         let after = STATE.with_borrow_mut(|st| {
+            st.rev += 1;
+            st.busy = false;
             for (p, t) in scans {
                 if let Some((_, tree)) = tree_of(&mut st.trees, &p)
                     && let Some(id) = tree.find(&p)
@@ -761,16 +998,29 @@ impl Space {
             f(app, &rep);
         }
         let undo = !rep.binned.is_empty();
-        let retry = STATE.with_borrow_mut(|st| {
-            st.last.names = outcome.names.clone();
+        let ok = outcome.failed.is_empty() && !outcome.missing;
+        // El aviso verde, solo con lo que sí se envió (o se borró del todo).
+        let names = if purge { outcome.names.clone() } else { binned };
+        let alt = STATE.with_borrow_mut(|st| {
+            st.last.names = names.clone();
             st.last.binned = rep.binned;
-            st.last.retry.is_some()
+            st.last.purge.is_some()
         });
-        // Reintentar no sirve para lo que ya se borró del todo.
-        let again = outcome.failed.iter().any(|r| *r != Reason::Purged);
-        set_note(app, outcome_text(&outcome, purge, alt), undo, retry && again);
+        if ok || undo {
+            set_note(app, done_text(&Outcome { names, sent: outcome.sent, ..Default::default() }, purge), undo);
+        }
         app.set_locked(false);
         repaint(app);
+        if !ok {
+            let mut nt = notice::failed(&outcome, purge, alt, app.get_admin(), folder);
+            // La línea enseña la ruta entera, no solo el nombre (decisión 10).
+            if let (Some(p), [line]) = (only, nt.lines.as_mut_slice()) {
+                let p = p.to_string_lossy();
+                line.0 = strip_verbatim(&p).unwrap_or(&p).to_string();
+            }
+            let k = Space(app.as_weak());
+            ui::notice(app, &nt, move |act| k.with(|app| k.act(app, act)));
+        }
     }
 
     /// «Deshacer»: devuelve lo enviado a la papelera, en un hilo.
@@ -782,6 +1032,7 @@ impl Space {
         if binned.is_empty() {
             return;
         }
+        STATE.with_borrow_mut(|st| st.busy = true);
         app.global::<SpaceData>().set_note(0);
         app.set_locked(true);
         let k = self.clone();
@@ -793,6 +1044,8 @@ impl Space {
 
     fn undone(app: &AppWindow, names: Vec<String>, ids: Vec<(At, PathBuf, Id)>, failed: Vec<PathBuf>) {
         STATE.with_borrow_mut(|st| {
+            st.rev += 1;
+            st.busy = false;
             for (at, p, id) in ids {
                 if !failed.contains(&p)
                     && let Some(tree) = tree_at(&mut st.trees, &Some(at))
@@ -807,9 +1060,14 @@ impl Space {
         } else {
             failed.iter().map(|p| p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into())).collect()
         };
-        set_note(app, undo_text(&names, &failed), false, false);
         app.set_locked(false);
         repaint(app);
+        if failed.is_empty() {
+            let (_, title, text) = undo_text(&names, &[]);
+            set_note(app, (title, text), false);
+        } else {
+            ui::notice(app, &notice::undo_failed(&failed), |_| {});
+        }
     }
 
     /// Se vuelve a la pestaña Carpetas: se repinta lo que se veía (un borrado desde otra pestaña
@@ -826,6 +1084,7 @@ impl Space {
     /// Lo borrado desde otra pestaña sale de los árboles de todas las unidades analizadas.
     pub(super) fn forget(&self, files: &[(PathBuf, u64)]) {
         STATE.with_borrow_mut(|st| {
+            st.rev += 1;
             for (tree, _) in st.trees.values_mut() {
                 for (p, size) in files {
                     tree.forget(p, *size);

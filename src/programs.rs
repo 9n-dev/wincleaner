@@ -1,6 +1,7 @@
 //! Reglas de la lista de programas instalados y de su desinstalación (sin Windows).
 
 use crate::cmdline::{resolve, split_exe};
+use crate::paths::{is_inside, same};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Hive {
@@ -197,6 +198,18 @@ pub fn wait_state(key_present: bool, user_done: bool) -> WaitState {
     }
 }
 
+/// El programa instalado en `path` o en una carpeta que lo contiene: el de `install_location`
+/// más profunda. Una ubicación vacía, que no se entiende o que es la raíz de una unidad no cuenta.
+pub fn owner(raws: &[RawEntry], path: &str) -> Option<usize> {
+    let depth = |l: &str| l.split(['\\', '/']).filter(|c| !c.is_empty()).count();
+    raws.iter()
+        .enumerate()
+        .filter_map(|(i, e)| Some((i, e.install_location.as_deref()?.trim().trim_matches('"'))))
+        .filter(|(_, l)| depth(l) > 1 && (same(l, path) || is_inside(path, l)))
+        .max_by_key(|(_, l)| depth(l))
+        .map(|(i, _)| i)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -344,5 +357,14 @@ mod tests {
         assert_eq!(v.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["c", "b", "A"]);
         sort(&mut v, SortKey::Name);
         assert_eq!(v.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["A", "b", "c"]);
+    }
+
+    #[test]
+    fn owner_by_install_location() {
+        let raw = |loc: &str| RawEntry { install_location: Some(loc.into()), ..RawEntry::default() };
+        let raws = vec![raw(r"C:\Program Files\Adobe"), raw(r"C:\Program Files\Adobe\Photoshop"), raw(""), raw(r"C:\")];
+        assert_eq!(owner(&raws, r"C:\Program Files\Adobe\Photoshop\x"), Some(1));
+        assert_eq!(owner(&raws, r"c:\program files\adobe"), Some(0));
+        assert_eq!(owner(&raws, r"C:\Program Files\NVIDIA"), None);
     }
 }
